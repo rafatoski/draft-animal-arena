@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "test": "node tests/run.mjs",
     "sync:shared": "node scripts/sync-shared.mjs",
-    "deploy:functions": "npx supabase functions deploy practice-match --project-ref floounhntoduncbyctky && npx supabase functions deploy start-match --project-ref floounhntoduncbyctky"
+    "deploy:functions": "npx supabase functions deploy practice-match --project-ref floounhntoduncbyctky && npx supabase functions deploy start-match --project-ref floounhntoduncbyctky && npx supabase functions deploy submit-boosts --project-ref floounhntoduncbyctky"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.9",
