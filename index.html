@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#60409c" />
+    <meta name="description" content="Animal Arena: draft three ridiculous fighters in five seconds and watch your pack battle." />
+    <style>
+      #boot-splash { position: fixed; inset: 0; z-index: 10; background: #000 url('/assets/images/splash.jpg') center / contain no-repeat; transition: opacity .4s; }
+      #boot-splash img { position: absolute; transform: translate(-50%, -50%); object-fit: contain; animation: boot-logo 2.8s cubic-bezier(.2, .7, .2, 1) both; }
+      @keyframes boot-logo { 0% { transform: translate(-50%, -50%) scale(1.35); opacity: 0; } 20% { opacity: 1; } 100% { transform: translate(-50%, -50%) scale(1); opacity: 1; } }
+      #boot-splash.hide { opacity: 0; pointer-events: none; }
+    </style>
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <title>Animal Arena — Pick a pack</title>
+  </head>
+  <body>
+    <div id="boot-splash"><img id="boot-logo" src="/src/assets/draft-animal-arena-logo.png" alt="Animal Arena" /></div>
+    <div id="app" class="arcade-background" role="application" aria-label="Animal Arena. Enter to start. Keys 1 to 6 select fighters during the five-second draft. Enter to play again after combat."></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
