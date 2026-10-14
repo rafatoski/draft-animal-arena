@@ -7,13 +7,16 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "test": "node tests/run.mjs"
+    "test": "node tests/run.mjs",
+    "sync:shared": "node scripts/sync-shared.mjs"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.9",
     "typescript": "~6.0.2",
     "vite": "^8.3.0"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.117.3",
     "phaser": "^3.90.0"
   }
 }

@@ -9,7 +9,7 @@ import type { Winner } from '../simulation/combat'
 import { audio } from '../services/audio'
 import { blackFrame } from '../ui/components'
 import { spriteKit, preloadFighterSprites } from '../game/fighterSprites'
-export interface ResultData { match: MatchSetup; winner: Winner; seconds: string; survivors: number; score: string }
+export interface ResultData { match: MatchSetup; winner: Winner; seconds: string; survivors: number; score: string; online?: { roomId: string; coinsEarned: number; winnerTeam: string[] } }
 export class ResultsScene extends Phaser.Scene {
   private practice = false
   constructor() { super('Results') }
@@ -23,11 +23,12 @@ export class ResultsScene extends Phaser.Scene {
     blackFrame(this, 44, 804)
     text(this, 240, 22, t('club'), 11, '#d9ccff').setDepth(901)
     if (this.practice) text(this, 240, 82, t('practiceNote'), 11, '#ffd367')
+    if (data.online) text(this, 240, 82, t('onlineMatch'), 11, '#ffd367')
     const title = text(this, 240, 128, t(draw ? 'draw' : win ? 'victory' : 'defeat'), 49, win ? '#ffd367' : '#fff4d9').setStroke('#173f46', 7).setScale(.5)
     this.tweens.add({ targets: title, scale: 1, duration: 450, ease: 'Back.Out' })
     text(this, 240, 190, t(draw ? 'drawSub' : win ? 'winSub' : 'loseSub'), 16, '#efe6ff')
     text(this, 240, 232, t('finalScore', { score: data.score }), 22, '#fff4d9').setStroke('#173f46', 4)
-    const team = data.winner === 'ai' ? data.match.ai : data.match.player
+    const team = data.online ? data.online.winnerTeam : data.winner === 'ai' ? data.match.ai : data.match.player
     team.forEach((id, i) => {
       const fighter = fighterById(id)
       const kit = spriteKit(fighter)
@@ -37,16 +38,25 @@ export class ResultsScene extends Phaser.Scene {
     text(this, 240, 389, t('duration', { seconds: data.seconds }), 18, '#fff4d9').setStroke('#49356e', 3)
     text(this, 240, 429, t('standing', { count: data.survivors }), 15, '#fff4d9')
     text(this, 240, 458, t('winnerIs', { team: t(win ? 'yours' : 'rivals') }), 14, '#ffd367')
-    button(this, 240, 526, t('rematch'), () => navigate(this, 'Arena', { match: rematch(data.match) }), { color: PALETTE.yellow })
-    text(this, 240, 571, t('rematchHint'), 12, '#d7f4d9')
-    button(this, 240, 624, t('again'), () => navigate(this, 'Arena', { fresh: true, practice: this.practice }))
-    text(this, 240, 669, t('againHint'), 12, '#d7f4d9')
-    button(this, 240, 722, t('home'), () => navigate(this, 'Menu'), { color: PALETTE.cream })
+    if (data.online) {
+      // Online: the rematch is decided in the lobby (both players ready up again); coins come from the server.
+      if (data.online.coinsEarned > 0) text(this, 240, 488, `+${data.online.coinsEarned} ${t('coinsLabel')}`, 18, '#ffd367').setStroke('#173f46', 4)
+      button(this, 240, 576, t('rematch'), () => navigate(this, 'Lobby', { roomId: data.online!.roomId }), { color: PALETTE.yellow })
+      text(this, 240, 621, t('rematchHint'), 12, '#d7f4d9')
+      button(this, 240, 690, t('home'), () => navigate(this, 'Menu'), { color: PALETTE.cream })
+    } else {
+      button(this, 240, 526, t('rematch'), () => navigate(this, 'Arena', { match: rematch(data.match) }), { color: PALETTE.yellow })
+      text(this, 240, 571, t('rematchHint'), 12, '#d7f4d9')
+      button(this, 240, 624, t('again'), () => navigate(this, 'Arena', { fresh: true, practice: this.practice }))
+      text(this, 240, 669, t('againHint'), 12, '#d7f4d9')
+      button(this, 240, 722, t('home'), () => navigate(this, 'Menu'), { color: PALETTE.cream })
+    }
     text(this, 240, 824, `${t('seed')}  ${data.match.seed}`, 10, '#d9ccff').setDepth(901)
     const onKey = (event: KeyboardEvent) => {
       if (event.repeat) return
       if (event.key === 'Enter' || event.key === ' ') {
-        audio.unlock(); navigate(this, 'Arena', { fresh: true, practice: this.practice })
+        audio.unlock()
+        if (data.online) navigate(this, 'Lobby', { roomId: data.online.roomId }); else navigate(this, 'Arena', { fresh: true, practice: this.practice })
       }
     }
     this.input.keyboard?.on('keydown', onKey)

@@ -5,6 +5,8 @@ import { fighterName } from '../services/i18n'
 import { text } from './components'
 import { cardKey } from './collectibleCard'
 import { CARD_REFERENCE, illustrationCrop } from './cardLayout'
+import { lockOverlay } from './lockOverlay'
+import { isUnlocked } from '../services/online'
 
 const RES = 2.4 // canvas pixels per design pixel; sharp up to a ~2.4x camera zoom
 const INK = 0x173f46, GLOW = 0xffd367
@@ -58,7 +60,9 @@ export function miniFighterCard(scene: Phaser.Scene, fighter: FighterDefinition,
   const badge = scene.add.container(width / 2 - 8, artY - height / 2 + 8, [
     scene.add.circle(0, 0, 14, 0x3bb66d).setStrokeStyle(3, INK), text(scene, 0, 0, '✓', 17, '#ffffff')]).setScale(0)
   const key = text(scene, -width / 2 + 14, artY - height / 2 + 14, String(index + 1), 11, '#fff4d9').setStroke('#173f46', 3)
+  const locked = !isUnlocked(fighter.id)
   root.add([glow, frame, look.normal, ...(look.muted ? [look.muted] : []), dim, name, key, badge])
+  if (locked) root.add(lockOverlay(scene, width, height, 16).setPosition(0, artY))
 
   const rect = (g: Phaser.GameObjects.Graphics, grow: number) => g.fillRoundedRect(-width / 2 - grow, artY - height / 2 - grow, width + grow * 2, height + grow * 2, 16 + grow)
   const draw = (on: boolean) => {
@@ -70,6 +74,7 @@ export function miniFighterCard(scene: Phaser.Scene, fighter: FighterDefinition,
     } else frame.lineStyle(2, 0x9bb8b2, .7).strokeRoundedRect(-width / 2, artY - height / 2, width, height, 16)
   }
   const apply = (on: boolean, animate: boolean) => {
+    if (locked) on = false // a locked fighter can never look selected
     draw(on)
     const to = { scale: on ? 1.08 : .93 }, fade = look.muted ? { normal: on ? 1 : 0, muted: on ? 0 : .6, dim: on ? 0 : look.muted ? 0 : 1 } : { normal: on ? 1 : .6, muted: 0, dim: on ? 0 : 1 }
     scene.tweens.killTweensOf([root, look.normal, look.muted, dim, badge, name].filter(Boolean))
@@ -85,5 +90,5 @@ export function miniFighterCard(scene: Phaser.Scene, fighter: FighterDefinition,
     root.setDepth(on ? 2 : 1) // a scaled-up selected tile draws over its neighbours
   }
   apply(false, false)
-  return { root, selected: (on: boolean) => apply(on, true) }
+  return { root, locked, selected: (on: boolean) => apply(on, true) }
 }

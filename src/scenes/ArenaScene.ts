@@ -4,6 +4,7 @@ import { preloadColosseum, preloadHeart, HEART_TEXTURE } from '../game/assets'
 import { loadPlayer } from '../services/player'
 import { createColosseum } from '../rendering/colosseum'
 import { sourceToWorld } from '../rendering/battlefield'
+import { DPR } from '../rendering/pixelRatio'
 import { arenaLayout, portraitLayout } from '../rendering/layout'
 import { CONFIG } from '../game/config'
 import { FIGHTERS } from '../game/fighters'
@@ -12,7 +13,8 @@ import { fireLaser } from '../game/robotArt'
 import { spriteKit, preloadFighterSprites } from '../game/fighterSprites'
 import type { SpriteKit } from '../game/spriteKit'
 import { CombatSimulation } from '../simulation/combat'
-import type { CombatEvent, Unit, Winner } from '../simulation/combat'
+import type { CombatEvent, Team, Unit, Winner } from '../simulation/combat'
+import { getProfile, ownedFighters, refreshProfile, waitForResult } from '../services/online'
 import { draftMatch, newSeed } from '../game/match'
 import { newSeries, recordRound, roundSeed, isFinalRound, WINS_NEEDED } from '../game/series'
 import type { Series } from '../game/series'
@@ -29,6 +31,8 @@ type Phase = 'ready' | 'draft' | 'countdown' | 'battle' | 'roundEnd' | 'result'
 interface UnitView { root: Phaser.GameObjects.Container; art: Phaser.GameObjects.Container; health: Phaser.GameObjects.Graphics; hpText: Phaser.GameObjects.Text; name: Phaser.GameObjects.Text
   /** Spritesheet fighters only. `busy` is the one-shot priority: 0 none, 1 attack, 2 hit, 3 death. */
   sprite?: Phaser.GameObjects.Sprite; kit?: SpriteKit; busy: number; px: number; py: number }
+/** Online match handed over by the lobby: the server's match id, which side this viewer is, and both names. */
+export interface OnlineLaunch { matchId: string; roomId: string; viewer: Team; names: { player: string; ai: string } }
 const RIVAL_NAMES = ['Rocky', 'Luna', 'Max', 'Bella', 'Rex', 'Nova'] // demo opponent names until real matchmaking exists
 const C = { cream: '#fff4d9', muted: '#d9ccff', mint: '#d4f5aa', ink: 0x173f46 }
 export class ArenaScene extends Phaser.Scene {
@@ -62,11 +66,22 @@ export class ArenaScene extends Phaser.Scene {
   private counts!: Record<'player' | 'ai', Phaser.GameObjects.Text>
   private hearts!: Record<'player' | 'ai', Phaser.GameObjects.Image[]>
   private practice = false
+  private online?: OnlineLaunch
+  /** Whose team is shown at the bottom, in friendly colours and on the left of the scoreboard. */
+  private viewer: Team = 'player'
+  private coinsBefore = 0
 
   constructor() { super('Arena') }
-  init(data: { match?: MatchSetup; practice?: boolean } = {}) { this.practice = !!(data.practice || data.match?.practice) }
+  init(data: { match?: MatchSetup; practice?: boolean; online?: OnlineLaunch } = {}) {
+    this.practice = !!(data.practice || data.match?.practice); this.online = data.online; this.viewer = data.online?.viewer ?? 'player'
+    this.coinsBefore = getProfile()?.coins ?? 0
+  }
+  /** The world is mirrored top-to-bottom for the 'ai' viewer so their own team is always at the bottom. */
+  private vy(y: number) { return this.viewer === 'player' ? y : 870 - y }
+  private other(team: Team): Team { return team === 'player' ? 'ai' : 'player' }
+  private at(unit: { x: number; y: number }) { return { x: unit.x, y: this.vy(unit.y) } }
   preload() { preloadColosseum(this); preloadHeart(this); preloadFighterSprites(this, this.practice); preloadCardArt(this, FIGHTERS) }
-  create(data: { match?: MatchSetup; fresh?: boolean; practice?: boolean } = {}) {
+  create(data: { match?: MatchSetup; fresh?: boolean; practice?: boolean; online?: OnlineLaunch } = {}) {
     battleBackground()
     this.input.enabled = true
     this.phase = 'ready'; this.selection = []; this.cards = []; this.views.clear()
@@ -125,15 +140,16 @@ export class ArenaScene extends Phaser.Scene {
     }
   }
   private resizeArena() {
-    const width = this.scale.width, height = this.scale.height
+    // Layout runs in CSS pixels; cameras get device-pixel viewports and DPR-scaled zoom.
+    const width = this.scale.width / DPR, height = this.scale.height / DPR
     const layout = arenaLayout(width, height)
     // Camera dimensions and zoom change; world coordinates and simulation never do.
-    this.cameras.main.setViewport(layout.viewport.x, layout.viewport.y, layout.viewport.width, layout.viewport.height)
-      .setZoom(layout.zoom).centerOn(layout.centerX, layout.centerY)
+    this.cameras.main.setViewport(layout.viewport.x * DPR, layout.viewport.y * DPR, layout.viewport.width * DPR, layout.viewport.height * DPR)
+      .setZoom(layout.zoom * DPR).centerOn(layout.centerX, layout.centerY)
     const drafting = this.phase === 'ready' || this.phase === 'draft'
     this.hudBackdrop.clear()
     if (drafting) {
-      const fit = portraitLayout(width, height)
+      const fit = portraitLayout(this.scale.width, this.scale.height)
       this.hudCamera.setViewport(fit.x, fit.y, fit.width, fit.height).setZoom(fit.zoom).centerOn(240, 420)
       this.hudBackdrop.fillStyle(0x2b1a55, 1).fillRect(0, 0, 480, 840)
         .fillStyle(0x000000).fillRect(0, 0, 480, 66).fillRect(0, 780, 480, 60)
@@ -144,7 +160,7 @@ export class ArenaScene extends Phaser.Scene {
       this.scoreboard.setVisible(false)
       this.exit.setVisible(true).setPosition(30, 34).setScale(1)
     } else {
-      this.hudCamera.setViewport(0, 0, width, height).setZoom(1).centerOn(width / 2, height / 2)
+      this.hudCamera.setViewport(0, 0, this.scale.width, this.scale.height).setZoom(DPR).centerOn(width / 2, height / 2)
       this.title.setVisible(false); this.status.setVisible(false); this.subtitle.setVisible(false)
       this.exit.setVisible(false)
       this.scoreboard.setVisible(true).setPosition(width / 2, 4).setScale(Math.min(1, (width - 16) / 420, ((height < 500 ? 62 : 96) - 6) / (this.practice ? 84 : 80)))
@@ -171,6 +187,9 @@ export class ArenaScene extends Phaser.Scene {
   private select(index: number) {
     if (this.phase !== 'draft') return
     const id = FIGHTERS[index]!.id
+    if (this.cards[index]!.locked) { // locked until bought: shake instead of selecting
+      this.tweens.add({ targets: this.cards[index]!.root, angle: 2, duration: 45, yoyo: true, repeat: 2 }); return
+    }
     if (this.selection.includes(id)) this.selection = this.selection.filter(value => value !== id)
     else if (this.selection.length < 3) this.selection.push(id)
     else {
@@ -187,7 +206,7 @@ export class ArenaScene extends Phaser.Scene {
       .fillStyle(this.draftRemaining < 1500 ? PALETTE.coral : PALETTE.yellow).fillRoundedRect(42, 204, Math.max(1, 396 * this.draftRemaining / CONFIG.draftMs), 7, 3)
   }
   private lockDraft() {
-    this.match = draftMatch(this.selection, this.seed, this.practice)
+    this.match = draftMatch(this.selection, this.seed, this.practice, ownedFighters())
     this.selection = [...this.match.player]
     this.beginBattle()
   }
@@ -230,7 +249,7 @@ export class ArenaScene extends Phaser.Scene {
   }
   /** Floating round title; combat stays paused until `done` runs. */
   private banner(title: string, note: string, hold: number, done: () => void) {
-    const w = this.scale.width, y = this.scale.height * .38
+    const w = this.scale.width / DPR, y = this.scale.height / DPR * .38
     const big = this.label(w / 2, y, title, 52, C.cream).setOrigin(.5).setStroke('#173f46', 8).setAlpha(0)
     const small = this.label(w / 2, y + 46, note, 15, C.mint).setOrigin(.5).setStroke('#173f46', 4).setAlpha(0)
     const fit = Math.min(1, (w - 24) / Math.max(big.width, small.width))
@@ -242,7 +261,7 @@ export class ArenaScene extends Phaser.Scene {
       onComplete: () => { big.destroy(); small.destroy(); done() } }))
   }
   private createUnit(unit: Unit) {
-    const ring = this.add.ellipse(0, 24, 73, 23, unit.team === 'player' ? 0xb9ec91 : 0xf69383, .6)
+    const ring = this.add.ellipse(0, 24, 73, 23, unit.team === this.viewer ? 0xb9ec91 : 0xf69383, .6)
     const kit = spriteKit(unit.definition)
     const sprite = kit?.create(this)
     const art = sprite ? this.add.container(0, 0, [sprite]) : animalArt(this, unit.definition)
@@ -250,9 +269,9 @@ export class ArenaScene extends Phaser.Scene {
     const name = this.add.text(0, -73, fighterName(unit.definition.id), { fontFamily: GAME_FONT_FAMILY, fontSize: 11, color: C.cream }).setOrigin(.5).setStroke('#173f46', 3)
     if (name.width > 84) name.setScale(84 / name.width)
     const hpText = this.add.text(0, -55.5, '', { fontFamily: GAME_FONT_FAMILY, fontSize: 9, color: C.cream }).setOrigin(.5).setStroke('#173f46', 3)
-    const root = this.add.container(unit.x, unit.y, [ring, art, health, name, hpText])
+    const root = this.add.container(unit.x, this.vy(unit.y), [ring, art, health, name, hpText])
     this.world.add(root)
-    const view: UnitView = { root, art, health, hpText, name, sprite, kit, busy: 0, px: unit.x, py: unit.y }
+    const view: UnitView = { root, art, health, hpText, name, sprite, kit, busy: 0, px: unit.x, py: this.vy(unit.y) }
     // Clears the one-shot lock; the sprite owns this listener, so it is destroyed with it each round.
     sprite?.on(Phaser.Animations.Events.ANIMATION_COMPLETE, (anim: Phaser.Animations.Animation) => {
       if (anim.key === kit!.anims.attack || anim.key === kit!.anims.hit) view.busy = 0
@@ -264,7 +283,7 @@ export class ArenaScene extends Phaser.Scene {
     const { health, hpText } = this.views.get(unit.id)!
     health.clear().fillStyle(0x173f46).fillRoundedRect(-35, -62, 70, 13, 5)
     health.lineStyle(1, 0xfff4d9, .7).strokeRoundedRect(-35, -62, 70, 13, 5)
-    if (unit.hp > 0) health.fillStyle(unit.team === 'player' ? 0x6fdc6f : 0xff6b5a).fillRoundedRect(-32, -59, Math.max(2, 64 * unit.hp / unit.definition.health), 7, 3)
+    if (unit.hp > 0) health.fillStyle(unit.team === this.viewer ? 0x6fdc6f : 0xff6b5a).fillRoundedRect(-32, -59, Math.max(2, 64 * unit.hp / unit.definition.health), 7, 3)
     hpText.setText(`${unit.hp}/${unit.definition.health}`)
   }
   private buildScoreboard(seed: number) {
@@ -272,7 +291,9 @@ export class ArenaScene extends Phaser.Scene {
     this.roundText = this.label(0, 14, '', 14, C.cream).setOrigin(.5).setStroke('#173f46', 4)
     this.scoreText = this.label(0, 44, '', 30, C.cream).setOrigin(.5).setStroke('#173f46', 5)
     const side = { player: -122, ai: 122 }
-    const names = { player: loadPlayer().name ?? t('guest'), ai: this.practice ? t('botTeam') : RIVAL_NAMES[seed % RIVAL_NAMES.length]! }
+    const names = this.online
+      ? { player: this.online.names[this.viewer], ai: this.online.names[this.other(this.viewer)] } // left = me, right = opponent
+      : { player: loadPlayer().name ?? t('guest'), ai: this.practice ? t('botTeam') : RIVAL_NAMES[seed % RIVAL_NAMES.length]! }
     const parts: Phaser.GameObjects.GameObject[] = [this.scoreGfx, this.roundText, this.scoreText]
     if (this.practice) parts.push(this.label(0, 74, t('practice'), 13, '#ffd367').setOrigin(.5).setStroke('#173f46', 4))
     const counts: Partial<typeof this.counts> = {}, hearts: Partial<typeof this.hearts> = {}
@@ -296,7 +317,8 @@ export class ArenaScene extends Phaser.Scene {
   private updateHud() {
     const g = this.scoreGfx.clear(), sim = this.simulation
     for (const [team, cx, fill] of [['player', -122, 0x4fe05a], ['ai', 122, 0xff5a3c]] as const) {
-      const alive = sim ? sim.units.filter(u => u.team === team && u.hp > 0).length : CONFIG.teamSize
+      const real = team === 'player' ? this.viewer : this.other(this.viewer) // display side -> simulation team
+      const alive = sim ? sim.units.filter(u => u.team === real && u.hp > 0).length : CONFIG.teamSize
       // One continuous bar that drains in thirds: each third is one fighter.
       g.fillStyle(0x173f46, .85).fillRoundedRect(cx - 84, 2, 168, 38, 12)
       if (alive > 0) g.fillStyle(fill).fillRoundedRect(cx - 80, 6, 160 * alive / CONFIG.teamSize, 30, 9)
@@ -304,12 +326,12 @@ export class ArenaScene extends Phaser.Scene {
       g.lineStyle(4, 0x173f46).strokeRoundedRect(cx - 84, 2, 168, 38, 12)
       this.counts[team].setText(`${alive}/${CONFIG.teamSize}`)
       // Both teams start with WINS_NEEDED hearts and lose one per round lost.
-      const lives = WINS_NEEDED - this.series.wins[team === 'player' ? 'ai' : 'player']
+      const lives = WINS_NEEDED - this.series.wins[this.other(real)]
       this.hearts[team].forEach((heart, i) => i < lives ? heart.clearTint().setAlpha(1) : heart.setTint(0x7a6a90).setAlpha(.55))
     }
     this.roundText.setText(isFinalRound(this.series) ? t('finalRound') : t('roundN', { n: this.series.round })).setScale(1)
     if (this.roundText.width > 80) this.roundText.setScale(80 / this.roundText.width)
-    this.scoreText.setText(`${this.series.wins.player} - ${this.series.wins.ai}`)
+    this.scoreText.setText(`${this.series.wins[this.viewer]} - ${this.series.wins[this.other(this.viewer)]}`)
   }
   /** DEATH > HIT > ATTACK: a lower-priority one-shot never interrupts a higher one, and death plays once. */
   private playOneShot(view: UnitView, kind: 'attack' | 'hit' | 'death') {
@@ -324,12 +346,12 @@ export class ArenaScene extends Phaser.Scene {
       const view = this.views.get(event.target)!, source = this.views.get(event.source)!
       const target = this.simulation!.units[event.target]!
       const attacker = this.simulation!.units[event.source]!
-      if (attacker.definition.robot) fireLaser(this, this.world, attacker, target)
+      if (attacker.definition.robot) fireLaser(this, this.world, this.at(attacker), this.at(target))
       else {
         const line = this.add.graphics().setDepth(800)
         this.world.add(line)
         line.lineStyle(event.critical ? 5 : 2, attacker.definition.range > 60 ? 0xe6c2ff : 0xfff4d2, .8)
-        line.lineBetween(attacker.x, attacker.y, target.x, target.y)
+        line.lineBetween(attacker.x, this.vy(attacker.y), target.x, this.vy(target.y))
         this.tweens.add({ targets: line, alpha: 0, duration: 140, onComplete: () => line.destroy() })
       }
       if (source.sprite) source.sprite.setFlipX(source.kit!.flip(target.x - attacker.x))
@@ -339,7 +361,7 @@ export class ArenaScene extends Phaser.Scene {
       view.art.setX(0).setAlpha(.6)
       this.tweens.add({ targets: view.art, x: 5, alpha: 1, duration: 65, yoyo: true, repeat: 1, onComplete: () => view.art.setX(0).setAlpha(1) })
       if (!source.sprite) this.tweens.add({ targets: source.art, scaleX: 1.1, scaleY: .9, duration: 85, yoyo: true })
-      const damage = this.label(target.x, target.y - 70, `${event.critical ? t('critical') + ' ' : ''}−${event.damage}`, event.critical ? 22 : 18, event.critical ? '#ffe28d' : '#ffffff').setOrigin(.5).setStroke('#253344', 4).setDepth(900)
+      const damage = this.label(target.x, this.vy(target.y) - 70, `${event.critical ? t('critical') + ' ' : ''}−${event.damage}`, event.critical ? 22 : 18, event.critical ? '#ffe28d' : '#ffffff').setOrigin(.5).setStroke('#253344', 4).setDepth(900)
       this.world.add(damage)
       this.tweens.add({ targets: damage, y: damage.y - 42, alpha: 0, duration: 750, onComplete: () => damage.destroy() })
       this.drawHealth(target)
@@ -363,9 +385,25 @@ export class ArenaScene extends Phaser.Scene {
     this.totalTicks += this.simulation!.tick
     this.series = recordRound(this.series, winner)
     this.updateHud()
-    if (this.series.winner) { this.phase = 'result'; this.time.delayedCall(750, () => this.showResult()); return }
-    this.roundNote = t(winner === 'draw' ? 'roundDraw' : winner === 'player' ? 'roundYou' : 'roundRival')
+    if (this.series.winner) { this.phase = 'result'; this.time.delayedCall(750, () => this.online ? void this.showOnlineResult() : this.showResult()); return }
+    this.roundNote = t(winner === 'draw' ? 'roundDraw' : winner === this.viewer ? 'roundYou' : 'roundRival')
     this.time.delayedCall(1000, () => this.startRound())
+  }
+  /** The server's stored result is the verdict; the local replay only has to look the same. */
+  private async showOnlineResult() {
+    const online = this.online!, me = getProfile()?.id
+    const match = await waitForResult(online.matchId)
+    await refreshProfile()
+    const iWon = match ? match.winnerId === me : this.series.winner === this.viewer
+    if (match && match.winnerId && (match.winnerId === me) !== (this.series.winner === this.viewer)) console.warn('[online] local replay disagrees with the server result; showing the server result')
+    const mine = match ? (this.viewer === 'player' ? match.score1 : match.score2) ?? 0 : this.series.wins[this.viewer]
+    const theirs = match ? (this.viewer === 'player' ? match.score2 : match.score1) ?? 0 : this.series.wins[this.other(this.viewer)]
+    const earned = Math.max(0, (getProfile()?.coins ?? 0) - this.coinsBefore)
+    navigate(this, 'Results', {
+      match: this.match, winner: iWon ? 'player' : 'ai', seconds: (this.totalTicks * CONFIG.tickMs / 1000).toFixed(1),
+      survivors: this.simulation!.units.filter(u => u.hp > 0 && u.team === this.viewer).length, score: `${mine}-${theirs}`,
+      online: { roomId: online.roomId, coinsEarned: earned, winnerTeam: iWon ? (this.viewer === 'player' ? this.match.player : this.match.ai) : (this.viewer === 'player' ? this.match.ai : this.match.player) },
+    })
   }
   private showResult() {
     const winner = this.series.winner!
@@ -390,15 +428,16 @@ export class ArenaScene extends Phaser.Scene {
       const events = this.simulation.step()
       for (const unit of this.simulation.units) {
         const view = this.views.get(unit.id)!
-        view.root.setPosition(unit.x, unit.y).setDepth(unit.y)
+        const sy = this.vy(unit.y)
+        view.root.setPosition(unit.x, sy).setDepth(sy)
         if (view.sprite) {
           if (unit.hp <= 0) continue
           const dx = unit.x - view.px
-          const dy = unit.y - view.py
+          const dy = sy - view.py
           if (Math.abs(dx) > .05) view.sprite.setFlipX(view.kit!.flip(dx))
           // ignoreIfPlaying: a looping clip must not restart on every tick.
           if (!view.busy) view.sprite.play(Math.hypot(dx, dy) > .05 ? view.kit!.walk(dx, dy) : view.kit!.anims.idle, true)
-          view.px = unit.x; view.py = unit.y
+          view.px = unit.x; view.py = sy
         } else if (unit.hp > 0) view.art.setAngle(Math.sin(this.simulation.tick * .32 + unit.id) * 4)
       }
       for (const event of events) this.showEvent(event)

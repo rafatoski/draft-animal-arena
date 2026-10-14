@@ -1,0 +1,44 @@
+import { CombatSimulation } from '../simulation/combat'
+import type { CombatEvent, Winner } from '../simulation/combat'
+import { newSeries, recordRound, roundSeed } from './series'
+
+export interface RoundLog { round: number; winner: Winner; ticks: number; events: CombatEvent[] }
+export interface OnlineResult {
+  /** 1 = player_1 (host, the 'player' side of the simulation), 2 = player_2. */
+  winner: 1 | 2
+  score: [number, number]
+  rounds: number
+  ticks: number
+  log: RoundLog[]
+  hash: string
+}
+
+/** FNV-1a over a compact transcript of the match; cheap proof that two runs saw the same fight. */
+function fnv(text: string) {
+  let h = 0x811c9dc5
+  for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193) >>> 0
+  return h.toString(16).padStart(8, '0')
+}
+
+/**
+ * Whole best-of-3 on the trusted side, with the exact loop the client runs round by round
+ * (series.ts rules, roundSeed per attempt, a drawn round is void and replayed with the next seed).
+ * Team 1 is the simulation's 'player' side, team 2 its 'ai' side.
+ */
+export function runOnlineMatch(team1: readonly string[], team2: readonly string[], combatSeed: number): OnlineResult {
+  let series = newSeries()
+  const log: RoundLog[] = []
+  let ticks = 0
+  for (let guard = 0; series.winner === null; guard++) {
+    if (guard > 30) throw new Error('match did not converge')
+    const sim = new CombatSimulation(team1, team2, roundSeed(combatSeed >>> 0, series.attempt))
+    const events: CombatEvent[] = []
+    while (sim.winner === null) events.push(...sim.step())
+    log.push({ round: log.length + 1, winner: sim.winner, ticks: sim.tick, events })
+    ticks += sim.tick
+    series = recordRound(series, sim.winner)
+  }
+  const score: [number, number] = [series.wins.player, series.wins.ai]
+  const hash = fnv(log.map(r => `${r.round}:${r.winner}:${r.ticks}:${r.events.length}`).join('|') + `#${score.join('-')}`)
+  return { winner: series.winner === 'player' ? 1 : 2, score, rounds: log.length, ticks, log, hash }
+}

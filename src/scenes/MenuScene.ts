@@ -6,6 +6,8 @@ import { homeIcon, homeNavigation } from '../ui/homeNavigation'
 import { homeLayout } from '../ui/homeLayout'
 import { preferences } from '../services/preferences'
 import { loadPlayer } from '../services/player'
+import { getProfile, onProfile } from '../services/online'
+import { DPR } from '../rendering/pixelRatio'
 import { audio } from '../services/audio'
 export class MenuScene extends Phaser.Scene {
   constructor() { super('Menu') }
@@ -32,9 +34,13 @@ export class MenuScene extends Phaser.Scene {
     const coinsHud = this.add.container(), coinFace = this.add.graphics(), coinIcon = homeIcon(this, 'coin')
     const coins = text(this, 0, 0, player.coins.toLocaleString(preferences.language), 17, '#fff4d9')
     coinsHud.add([coinFace, coinIcon, coins])
+    // Tapping the coin pill opens the account / online screen.
+    coinsHud.setInteractive(new Phaser.Geom.Rectangle(0, 0, 100, 48), Phaser.Geom.Rectangle.Contains)
+    coinsHud.input!.cursor = 'pointer'
+    coinsHud.on('pointerup', () => { audio.unlock(); audio.effect('tap'); navigate(this, 'Account') })
     // Display-only placeholder. It is intentionally separate from saved player data.
     const gemsHud = this.add.container(), gemFace = this.add.graphics(), gemIcon = homeIcon(this, 'gems')
-    const gems = text(this, 0, 0, (0).toLocaleString(preferences.language), 17, '#fff4d9')
+    const gems = text(this, 0, 0, (getProfile()?.diamonds ?? 0).toLocaleString(preferences.language), 17, '#fff4d9')
     gemsHud.add([gemFace, gemIcon, gems])
     const brand = this.add.image(0, 0, LOGO_TEXTURE)
     // Deliberately empty until the supplied illustration URL is configured.
@@ -50,8 +56,8 @@ export class MenuScene extends Phaser.Scene {
       if (id === 'play') navigate(this, 'Arena')
     })
     const resize = () => {
-      const w = this.scale.width, h = this.scale.height, layout = homeLayout(w, h)
-      this.cameras.main.setViewport(0, 0, w, h).setZoom(1).centerOn(w / 2, h / 2)
+      const w = this.scale.width / DPR, h = this.scale.height / DPR, layout = homeLayout(w, h)
+      this.cameras.main.setViewport(0, 0, this.scale.width, this.scale.height).setZoom(DPR).centerOn(w / 2, h / 2)
       const drawHud = (face: Phaser.GameObjects.Graphics, width: number, height: number) => face.clear()
         .fillStyle(0x291a4d, .9).fillRoundedRect(-width / 2, -height / 2 + 4, width, height, 14)
         .fillStyle(0x6743a4, .96).fillRoundedRect(-width / 2, -height / 2, width, height, 14)
@@ -68,6 +74,7 @@ export class MenuScene extends Phaser.Scene {
         [gemsHud, gemFace, gemIcon, gems, layout.topHud.gems],
       ] as const) {
         root.setPosition(box.x, box.y)
+        if (root === coinsHud) { coinsHud.setSize(box.width, box.height); (coinsHud.input!.hitArea as Phaser.Geom.Rectangle).setTo(0, 0, box.width, box.height) }
         drawHud(face, box.width, box.height)
         icon.setPosition(-box.width / 2 + 22, 0).setScale(box.height / 52)
         value.setPosition(12, 0).setScale(1)
@@ -79,10 +86,13 @@ export class MenuScene extends Phaser.Scene {
       nav.resize(layout.nav.x, layout.nav.y, layout.nav.width, layout.nav.height)
     }
     resize(); this.cameras.main.fadeIn(220, 83, 66, 142)
+    // Server coins replace the local placeholder once a profile is loaded; offline it stays as before.
+    const stopCoins = onProfile(profile => { coins.setText((profile?.coins ?? player.coins).toLocaleString(preferences.language)); gems.setText((profile?.diamonds ?? 0).toLocaleString(preferences.language)); resize() })
+    if (getProfile()) coins.setText(getProfile()!.coins.toLocaleString(preferences.language)); resize()
     brand.setAlpha(0); this.tweens.add({ targets: brand, alpha: 1, duration: 500 })
     this.scale.on(Phaser.Scale.Events.RESIZE, resize)
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Enter' && !e.repeat) { audio.unlock(); navigate(this, 'Arena') } }
     this.input.keyboard?.on('keydown', onKey)
-    this.events.once('shutdown', () => { this.scale.off(Phaser.Scale.Events.RESIZE, resize); this.input.keyboard?.off('keydown', onKey) })
+    this.events.once('shutdown', () => { stopCoins(); this.scale.off(Phaser.Scale.Events.RESIZE, resize); this.input.keyboard?.off('keydown', onKey) })
   }
 }

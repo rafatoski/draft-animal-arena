@@ -3,6 +3,8 @@ import fightersIconUrl from '../assets/home-fighters.png'
 import practiceIconUrl from '../assets/home-practice.png'
 import rankingIconUrl from '../assets/home-ranking.png'
 import coinIconUrl from '../assets/home-coin.png'
+import settingsIconUrl from '../assets/home-settings.png'
+import gemsIconUrl from '../assets/home-gems.png'
 export type HomeAction = 'fighters' | 'practice' | 'ranking' | 'play'
 export type HomeIcon = Exclude<HomeAction, 'play'> | 'settings' | 'coin' | 'gems'
 export interface ImageReference { key: string; url?: string }
@@ -13,9 +15,9 @@ export const HOME_ASSETS = {
     fighters: { key: 'home-fighters', url: fightersIconUrl },
     practice: { key: 'home-practice', url: practiceIconUrl },
     ranking: { key: 'home-ranking', url: rankingIconUrl },
-    settings: { key: 'home-settings' },
+    settings: { key: 'home-settings', url: settingsIconUrl },
     coin: { key: 'home-coin', url: coinIconUrl },
-    gems: { key: 'home-gems' },
+    gems: { key: 'home-gems', url: gemsIconUrl },
   } as Record<HomeIcon, ImageReference>,
 }
 /** Decorative home illustrations in public/assets/home. Only files that exist at build time are used. */

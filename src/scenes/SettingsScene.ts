@@ -21,6 +21,7 @@ export class SettingsScene extends Phaser.Scene {
       savePreferences({ sfx: !preferences.sfx }); audio.sync(); this.scene.restart()
     }, { width: 100, color: preferences.sfx ? PALETTE.mint : 0xd7dbcf })
     text(this, 240, 551, t('saved'), 13, '#fff4d9')
+    button(this, 240, 600, t('accountTitle'), () => navigate(this, 'Account'), { color: 0xffffff })
     button(this, 240, 690, `‹  ${t('back')}`, () => navigate(this, 'Menu'), { color: PALETTE.yellow })
   }
   private language(language: 'en' | 'es') {
