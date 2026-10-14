@@ -20,6 +20,8 @@ export class LobbyScene extends Phaser.Scene {
   private note = ''
   private starting = false
   private launched = false
+  private sawLobby = false // this scene watched the room in 'lobby', so a 'finished' room with a match is the one we just started
+  private startedAt = 0
   private offset = 0
   private finalizing = false
   private timerText?: Phaser.GameObjects.Text
@@ -28,7 +30,7 @@ export class LobbyScene extends Phaser.Scene {
   init(data: { roomId?: string } = {}) { this.roomId = data.roomId }
   preload() { preloadCardArt(this, FIGHTERS) }
   create() {
-    this.input.enabled = true; this.state = null; this.cards = []; this.picked = []; this.note = ''; this.starting = false; this.launched = false; this.finalizing = false
+    this.input.enabled = true; this.state = null; this.cards = []; this.picked = []; this.note = ''; this.starting = false; this.launched = false; this.finalizing = false; this.sawLobby = false; this.startedAt = 0
     background(this); entrance(this); heading(this, t('lobbyTitle'), t('lobbyHint'))
     this.view = this.add.container(0, 0)
     this.events.once('shutdown', () => { this.stop?.(); this.stop = undefined })
@@ -45,6 +47,7 @@ export class LobbyScene extends Phaser.Scene {
     this.stop = watchRoom(roomId, me, () => void this.sync(), online => { this.online = online; this.draw() })
     this.state = state; this.buildRoom(); this.react()
     this.time.addEvent({ delay: 250, loop: true, callback: () => this.tick() })
+    this.time.addEvent({ delay: 2000, loop: true, callback: () => this.watchdog() }) // realtime is a hint, never the only way to find out
   }
   /** Countdown to the SERVER's deadline. At zero the server is asked to finish the selection; it refuses if its own clock disagrees. */
   private tick() {
@@ -73,17 +76,33 @@ export class LobbyScene extends Phaser.Scene {
   /** Both players run this on every change; start-match is idempotent so only one match is ever created. */
   private react() {
     const state = this.state; if (!state) return
-    const seats = state.seats
-    if (state.room.status === 'lobby' && seats.length === 2 && seats.every(s => s.ready) && !this.starting) {
-      this.starting = true; void startMatch(state.room.id).then(r => { if (!r.ok) { this.starting = false; this.note = t('errGeneric'); this.draw() } })
+    const seats = state.seats, allReady = seats.length === 2 && seats.every(s => s.ready)
+    if (state.room.status === 'lobby') this.sawLobby = true
+    if (state.room.status === 'lobby' && allReady && !this.starting) {
+      this.starting = true; this.startedAt = Date.now(); this.note = ''
+      void startMatch(state.room.id).then(r => { if (!r.ok) { console.warn('[online] start-match failed:', r.message); this.starting = false; this.note = t('errGeneric'); this.draw() } })
     }
-    if (state.room.status === 'in_match' && state.room.matchId && !this.launched) { this.launched = true; void this.launch(state) }
-    if (state.room.status === 'lobby') this.starting = this.starting && seats.every(s => s.ready)
+    // The server simulates the whole match inside start-match, so the room is 'in_match' for only a few ms: 'finished' with a match id is just as valid.
+    const started = state.room.status === 'in_match' || (state.room.status === 'finished' && this.sawLobby && allReady)
+    if (started && state.room.matchId && !this.launched) { this.launched = true; void this.launch(state) }
+    if (state.room.status === 'lobby') this.starting = this.starting && allReady
+  }
+  /** Every 2 s while "Starting match" shows: re-read the room (missed realtime events), and give up visibly after 25 s. */
+  private watchdog() {
+    if (!this.starting || this.launched || !this.sys.isActive()) return
+    void this.sync()
+    if (Date.now() - this.startedAt > 25000 && !this.note) { console.warn('[online] match did not start within 25 s'); this.note = t('startTimeout'); this.draw(); this.showRetry() }
+  }
+  private showRetry() {
+    const retry = button(this, 240, 640, t('retry'), () => {
+      retry.destroy(); this.note = ''; this.starting = false; this.launched = false; void this.sync()
+    }, { width: 200, size: 15, color: PALETTE.yellow })
+    this.view.add(retry)
   }
   private async launch(state: RoomState) {
     const match = await fetchMatch(state.room.matchId!)
     const me = getProfile()?.id
-    if (!match || !me) { this.launched = false; return }
+    if (!match || !me) { console.warn('[online] could not load match', state.room.matchId); this.launched = false; return } // the watchdog tries again
     const name = (id: string) => state.seats.find(s => s.playerId === id)?.name ?? '…'
     const launch: OnlineLaunch = { matchId: match.id, roomId: state.room.id, viewer: me === match.player1 ? 'player' : 'ai', names: { player: name(match.player1), ai: name(match.player2) } }
     this.stop?.(); this.stop = undefined

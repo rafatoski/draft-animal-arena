@@ -204,6 +204,10 @@ test('end to end: two players, server simulation, both clients replay the same r
   await db.query('select * from public.finalize_match($1, $2::smallint, $3, $4, $5, $6, $7::jsonb, $8)',
     [m.match_id, server.winner, server.score[0], server.score[1], server.rounds, server.ticks, JSON.stringify(server.log.map(x => ({ round: x.round, events: x.events }))), server.hash])
 
+  // The second player's start-match call arrives after the room is already 'finished': same match back, nothing created twice.
+  const late = (await q(`select * from public.begin_match('${r.id}', '${D}')`))[0]
+  assert.equal(late.match_id, m.match_id); assert.equal(late.created, false); assert.equal(late.match_status, 'finished')
+
   // Each player's browser reads the match row it is allowed to see and replays it locally.
   for (const id of [D, E]) {
     await asUser(id)
