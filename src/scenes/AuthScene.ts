@@ -26,7 +26,7 @@ export class AuthScene extends Phaser.Scene {
   private async restore() {
     if (supabaseConfigured) {
       const session = await realSession()
-      if (session && this.sys.isActive()) { await refreshProfile(); if (this.sys.isActive()) return navigate(this, 'Menu') }
+      if (session && this.sys.isActive()) { await refreshProfile(); if (this.sys.isActive() && await realSession()) return navigate(this, 'Menu') } // a deleted account's stale session is dropped by refreshProfile
     }
     if (this.sys.isActive()) this.render()
   }

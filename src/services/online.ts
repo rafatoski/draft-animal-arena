@@ -30,6 +30,9 @@ export async function refreshProfile(): Promise<OnlineProfile | null> {
       supabase.from('player_fighters').select('fighter_id').eq('player_id', session.user.id),
       supabase.from('fighter_upgrades').select('fighter_id, stat, level').eq('player_id', session.user.id),
     ])
+    if (p.error?.code === 'PGRST116') { // signed in, but the account no longer exists server-side (deleted): drop the stale local session
+      await supabase.auth.signOut({ scope: 'local' }); setProfile(null); return null
+    }
     if (p.error || g.error) { console.warn('[profile] could not load', p.error?.message ?? g.error?.message); return profile }
     const upgrades: Record<string, StatLevels> = {}
     for (const row of u.error ? [] : u.data) (upgrades[row.fighter_id] ??= noLevels())[row.stat as UpgradeStat] = row.level

@@ -46,7 +46,7 @@ export class AccountScene extends Phaser.Scene {
       add(button(this, 240, 440, t('continueGoogle'), () => this.run(), { color: 0xffffff }),
         button(this, 240, 520, t('backToStart'), () => { endGuest(); navigate(this, 'Auth') }, { color: 0xffb9a8 }))
       if (this.busy) add(text(this, 240, 580, t('working'), 15, '#d9ccff'))
-    } else add(button(this, 240, 400, t('backToStart'), () => navigate(this, 'Auth'), { color: PALETTE.yellow }))
+    } else add(button(this, 240, 400, t('continueGoogle'), () => this.run(), { color: 0xffffff }), button(this, 240, 480, t('backToStart'), () => navigate(this, 'Auth'), { color: PALETTE.yellow }))
     if (this.message) add(text(this, 240, 640, this.message, 14, '#ffb9a8').setWordWrapWidth(400))
     add(button(this, 240, 750, `‹  ${t('back')}`, () => navigate(this, 'Menu'), { color: PALETTE.cream }))
   }

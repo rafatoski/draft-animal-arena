@@ -43,7 +43,7 @@ export class MenuScene extends Phaser.Scene {
     const gemsHud = this.add.container(), gemFace = this.add.graphics(), gemIcon = homeIcon(this, 'gems')
     const gems = text(this, 0, 0, (getProfile()?.diamonds ?? 0).toLocaleString(preferences.language), 17, '#fff4d9')
     gemsHud.add([gemFace, gemIcon, gems])
-    const nameLabel = text(this, 0, 0, playerName(), 12, '#d9ccff').setOrigin(0, .5)
+    const nameLabel = text(this, 0, 0, playerName(), 15, '#fff4d9').setOrigin(0, .5)
     const brand = this.add.image(0, 0, LOGO_TEXTURE)
     // Deliberately empty until the supplied illustration URL is configured.
     const illustration = this.add.container(0, 0).setName('home-illustration-slot')
@@ -82,9 +82,9 @@ export class MenuScene extends Phaser.Scene {
         value.setPosition(12, 0).setScale(1)
         if (value.width > box.width - 50) value.setScale((box.width - 50) / value.width)
       }
-      const cb = layout.topHud.coins
-      nameLabel.setScale(1).setPosition(cb.x - cb.width / 2 + 4, cb.y + cb.height / 2 + 12)
-      if (nameLabel.width > 170) nameLabel.setScale(170 / nameLabel.width)
+      const cb = layout.topHud.coins, nameX = settingsBox.x + settingsBox.width / 2 + 8, nameRoom = cb.x - cb.width / 2 - 8 - nameX
+      nameLabel.setScale(1).setPosition(nameX, settingsBox.y) // beside the settings icon, up to the coin pill
+      if (nameLabel.width > nameRoom) nameLabel.setScale(nameRoom / nameLabel.width)
       brand.setPosition(layout.logo.x, layout.logo.y).setScale(Math.min(layout.logo.width / brand.width, layout.logo.height / brand.height))
       illustration.setPosition(layout.illustration.x, layout.illustration.y).setSize(layout.illustration.width, layout.illustration.height)
       if (image) image.setScale(Math.min(layout.illustration.width / image.width, layout.illustration.height / image.height))

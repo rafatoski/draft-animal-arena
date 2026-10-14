@@ -119,7 +119,7 @@ test('Agent Platypus Shadow Cloak: evades exactly the next attack (a real combat
 test('Agent Platypus Venom Strike: direct damage then deterministic poison that expires, refreshes (never stacks) and can kill', () => {
   const sim = calm(duel(['platypus', 'chicken', 'capybara'])), pl = sim.units[0], foe = sim.units[3]
   for (const u of sim.units.slice(1)) place(u, 900 + u.id * 30, 900)
-  place(pl, 100, 500); place(foe, 100, 530); pl.abilityCooldown.venom = 0; foe.hp = 5000 // a long-lived target, so only the poison is measured
+  place(pl, 100, 500); place(foe, 100, 530); pl.abilityCooldown.venom = 0; foe.hp = 5000; pl.hp = 5000 // long-lived fighters, so only the poison is measured
   const first = run(sim, 1)
   assert.ok(first.some(e => e.type === 'hit' && e.ability === 'venom')); assert.ok(first.some(e => e.type === 'status' && e.status === 'poison'))
   assert.equal(foe.poison, ABILITIES.venom.poisonTicks - 0)
@@ -127,7 +127,7 @@ test('Agent Platypus Venom Strike: direct damage then deterministic poison that 
   assert.equal(pulses.length, ABILITIES.venom.poisonTicks / ABILITIES.venom.every); assert.ok(pulses.every(e => e.damage === ABILITIES.venom.poisonDamage))
   assert.equal(foe.poison, 0) // expired
   // re-applying while poisoned refreshes the timer; the pulse damage does not add up
-  pl.abilityCooldown.venom = 0; run(sim, 1); const t1 = foe.poison; run(sim, 25); pl.abilityCooldown.venom = 0; run(sim, 1)
+  place(pl, foe.x, foe.y - 30); pl.abilityCooldown.venom = 0; run(sim, 1); const t1 = foe.poison; run(sim, 25); place(pl, foe.x, foe.y - 30); pl.abilityCooldown.venom = 0; run(sim, 1)
   assert.ok(t1 <= ABILITIES.venom.poisonTicks && foe.poison <= ABILITIES.venom.poisonTicks); assert.equal(foe.poisonDamage, ABILITIES.venom.poisonDamage)
   // poison can finish a fighter off, and the dead do not act
   foe.hp = 2; foe.poison = 10; foe.poisonDamage = 3

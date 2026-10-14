@@ -107,6 +107,15 @@ export class CombatSimulation {
     }
     return false
   }
+  /** In reach but waiting on the cooldown: ranged fighters kite back, melee fighters step away after a swing, everyone else circles the target. (ux, uy) points at it. */
+  private reposition(unit: Unit, ux: number, uy: number, distance: number) {
+    const { speed, range, cooldown } = unit.definition, step = speed * CONFIG.tickMs / 1000
+    const back = range >= 100 ? distance < range * .7 : unit.cooldown > cooldown / 2
+    const side = (unit.id + Math.floor(this.tick / 24)) % 2 ? 1 : -1 // flips every 1.2 s
+    const [mx, my] = back ? [-ux * .8, -uy * .8] : [-uy * side * .5, ux * side * .5]
+    const { left, right, top, bottom } = CONFIG.arena // margins keep the whole sprite (body, health bar, floating text) on screen
+    unit.x = Math.min(right - 70, Math.max(left + 70, unit.x + mx * step)); unit.y = Math.min(bottom - 55, Math.max(top + 60, unit.y + my * step))
+  }
   step(): CombatEvent[] {
     if (this.winner !== null) return []
     this.tick++
@@ -148,7 +157,7 @@ export class CombatSimulation {
         const damage = Math.max(1, Math.round((unit.definition.attack - target.definition.defense) * (critical ? 1.75 : 1)))
         this.strike(unit, target, damage, critical, events)
         unit.cooldown = unit.definition.cooldown
-      }
+      } else this.reposition(unit, dx / distance, dy / distance, distance)
     }
     for (const event of events) if (event.type === 'hit' || event.type === 'poison') {
       const target = this.units[event.target]!
