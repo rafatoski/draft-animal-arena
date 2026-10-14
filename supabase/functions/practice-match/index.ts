@@ -40,5 +40,5 @@ Deno.serve(async (req) => {
   })
   if (error) return json({ error: error.message }, error.code === '42501' ? 403 : 400)
   // A retried request returns the stored match, so the replay seed and the reward always agree.
-  return json({ match_id: data.id, team: data.team, robot_team: data.robot_team, combat_seed: Number(data.combat_seed), player_won: data.player_won, coins: data.coins, limited: data.limited, bonus: data.bonus })
+  return json({ match_id: data.id, team: data.team, robot_team: data.robot_team, combat_seed: Number(data.combat_seed), player_won: data.player_won, coins: data.coins, diamonds: data.diamonds, limited: data.limited, bonus: data.bonus })
 })

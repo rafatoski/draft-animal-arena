@@ -240,7 +240,7 @@ export class ArenaScene extends Phaser.Scene {
     if (launch) {
       this.match = { ...this.match, ai: launch.robots, combatSeed: launch.combatSeed, bonus: { player: launch.bonus } } // the server's upgrade snapshot
       this.serverPracticeWin = launch.playerWon
-      this.practiceReward = !launch.playerWon ? undefined : launch.limited ? { status: 'limited' } : { status: 'ok', coins: launch.coins, diamonds: 0 }
+      this.practiceReward = !launch.playerWon ? undefined : launch.limited ? { status: 'limited' } : { status: 'ok', coins: launch.coins, diamonds: launch.diamonds }
     } else this.practiceReward = { status: 'failed' } // still playable, but no reward is claimed
     this.beginBattle()
   }

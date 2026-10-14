@@ -47,7 +47,7 @@ test('guest session: temporary coins in memory only, 1-3 per win, no diamonds, n
 test('the Edge Function and migration agree on the practice rules', () => {
   const fn = readFileSync('supabase/functions/practice-match/index.ts', 'utf8'), sql = readFileSync('supabase/migrations/20261014000003_google_only_practice_rewards.sql', 'utf8')
   assert.ok(/record_practice_match/.test(fn) && /runOnlineMatch\(team, ROBOT_IDS/.test(fn)) // the server simulates, the client only names its team
-  assert.ok(!/diamonds/.test(sql.slice(sql.indexOf('create function public.record_practice_match'))) || /never pays diamonds/.test(sql)) // practice cannot touch diamonds
+  assert.ok(/practice_diamond/.test(readFileSync('supabase/migrations/20261014000011_practice_diamonds.sql', 'utf8'))) // practice diamonds are a configured chance, not a fixed payout
 })
 
 test('upgrade formulas: cost = 5 x 2^level, stat = base + 5 x level, and the UI mirror equals the SQL config', () => {

@@ -279,24 +279,33 @@ const T = ['chicken', 'capybara', 'frog']
 let nextRequest = 0
 const req = () => `10000000-0000-4000-8000-${String(++nextRequest).padStart(12, '0')}`
 
-test('practice rewards: a win pays 1-3 coins and never diamonds, ranking or online stats; a loss pays nothing', async () => {
+test('practice rewards: a win pays 1-3 coins and sometimes 1 diamond, never ranking or online stats; a loss pays nothing', async () => {
   await asService(); const before = await progress(A)
   const won = (await practice(A, req(), T, true))[0]
-  assert.ok(won.coins >= 1 && won.coins <= 3 && !won.limited)
+  assert.ok(won.coins >= 1 && won.coins <= 3 && !won.limited && [0, 1].includes(won.diamonds))
   const after = await progress(A)
-  assert.equal(after.coins - before.coins, won.coins)
-  assert.deepEqual([after.diamonds, after.wins, after.losses, after.total_matches], [before.diamonds, before.wins, before.losses, before.total_matches])
+  assert.equal(after.coins - before.coins, won.coins); assert.equal(after.diamonds - before.diamonds, won.diamonds)
+  assert.deepEqual([after.wins, after.losses, after.total_matches], [before.wins, before.losses, before.total_matches])
   await rewind()
   const lost = (await practice(A, req(), T, false))[0]
-  assert.equal(lost.coins, 0); assert.deepEqual(await progress(A), after)
-  assert.deepEqual((await q(`select currency, transaction_type, amount from public.economy_transactions where player_id = '${A}' and transaction_type = 'practice_reward'`)).map(r => [r.currency, r.amount]), [['coins', won.coins]])
+  assert.deepEqual([lost.coins, lost.diamonds], [0, 0]); assert.deepEqual(await progress(A), after)
+  assert.deepEqual((await q(`select currency, amount from public.economy_transactions where player_id = '${A}' and transaction_type = 'practice_reward' order by currency`)).map(r => [r.currency, r.amount]),
+    [['coins', won.coins], ...(won.diamonds ? [['diamonds', won.diamonds]] : [])])
+})
+
+test('practice diamonds follow economy_config.practice_diamond: chance 1 always pays, chance 0 never, a limited win pays none', async () => {
+  await asService(); const set = c => db.exec(`update public.economy_config set config = jsonb_set(config, '{practice_diamond,chance}', '${c}')`)
+  await set(1); await rewind(); const b1 = await progress(B), yes = (await practice(B, req(), T, true))[0]
+  assert.equal(yes.diamonds, 1); assert.equal((await progress(B)).diamonds - b1.diamonds, 1)
+  const rapid = (await practice(B, req(), T, true))[0]; assert.deepEqual([rapid.limited, rapid.diamonds], [true, 0]) // seconds later: limited
+  await set(0); await rewind(); assert.equal((await practice(B, req(), T, true))[0].diamonds, 0)
+  await set(0.3)
 })
 
 test('practice rewards: the amount is always within 1-3 and varies', async () => {
   await asService(); const seen = new Set()
   for (let i = 0; i < 40; i++) { await rewind(); seen.add((await practice(B, req(), T, true))[0].coins) }
   assert.ok([...seen].every(c => c >= 1 && c <= 3)); assert.ok(seen.size >= 2)
-  assert.equal((await progress(B)).diamonds, 0)
 })
 
 test('practice rewards: a retried request id never pays twice; rapid new requests and the hourly cap are limited', async () => {

@@ -243,13 +243,13 @@ export async function fetchReward(matchId: string): Promise<Reward | null> {
   } catch { return null }
 }
 
-export interface PracticeLaunch { matchId: string; team: string[]; robots: string[]; combatSeed: number; playerWon: boolean; coins: number; limited: boolean; bonus: TeamBonus }
+export interface PracticeLaunch { matchId: string; team: string[]; robots: string[]; combatSeed: number; playerWon: boolean; coins: number; diamonds: number; limited: boolean; bonus: TeamBonus }
 /** Asks the server to run a practice match: it picks the seed, simulates it and records the reward. null = could not be verified. */
 export async function practiceMatch(team: readonly string[]): Promise<PracticeLaunch | null> {
   if (!supabase || !profile) return null
   try {
     const { data, error } = await supabase.functions.invoke('practice-match', { body: { team, request_id: crypto.randomUUID() } })
     if (error || !data?.match_id) return null
-    return { matchId: data.match_id, team: data.team, robots: data.robot_team, combatSeed: data.combat_seed, playerWon: data.player_won, coins: data.coins, limited: data.limited, bonus: data.bonus ?? {} }
+    return { matchId: data.match_id, team: data.team, robots: data.robot_team, combatSeed: data.combat_seed, playerWon: data.player_won, coins: data.coins, diamonds: data.diamonds ?? 0, limited: data.limited, bonus: data.bonus ?? {} }
   } catch { return null }
 }
