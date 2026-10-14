@@ -2,9 +2,23 @@
 import { CombatSimulation } from '../simulation/combat.ts'
 import type { CombatEvent, Winner } from '../simulation/combat.ts'
 import { newSeries, recordRound, roundSeed } from './series.ts'
+import { CONFIG } from './config.ts'
 import type { TeamBonus } from './upgrades.ts'
 
 export interface RoundLog { round: number; winner: Winner; ticks: number; events: CombatEvent[] }
+/** One accepted hype press: `tick` is the simulation tick it takes effect on, `attempt` the series attempt (round seed index). */
+export interface BoostPress { attempt: number; tick: number; unit: number }
+/** Untrusted press list -> only well-formed presses for the given units, capped. Rules (recharge, one at a time) are enforced by the simulation itself. */
+export function cleanPresses(raw: unknown, units: readonly number[]): BoostPress[] {
+  if (!Array.isArray(raw)) return []
+  const out: BoostPress[] = []
+  for (const p of raw.slice(0, 400)) {
+    const { attempt, tick, unit } = (p ?? {}) as Record<string, unknown>
+    if (Number.isInteger(attempt) && Number.isInteger(tick) && Number.isInteger(unit) && (attempt as number) >= 0 && (attempt as number) <= 30 && (tick as number) >= 1 && (tick as number) <= CONFIG.maxTicks && units.includes(unit as number)) out.push({ attempt: attempt as number, tick: tick as number, unit: unit as number })
+  }
+  return out
+}
+
 export interface OnlineResult {
   /** 1 = player_1 (host, the 'player' side of the simulation), 2 = player_2. */
   winner: 1 | 2
@@ -25,9 +39,9 @@ function fnv(text: string) {
 /**
  * Whole best-of-3 on the trusted side, with the exact loop the client runs round by round
  * (series.ts rules, roundSeed per attempt, a drawn round is void and replayed with the next seed).
- * Team 1 is the simulation's 'player' side, team 2 its 'ai' side.
+ * Team 1 is the simulation's 'player' side (units 0-2), team 2 its 'ai' side (units 3-5). `presses` replays both players' hype presses.
  */
-export function runOnlineMatch(team1: readonly string[], team2: readonly string[], combatSeed: number, bonus: { player?: TeamBonus; ai?: TeamBonus } = {}): OnlineResult {
+export function runOnlineMatch(team1: readonly string[], team2: readonly string[], combatSeed: number, bonus: { player?: TeamBonus; ai?: TeamBonus } = {}, presses: readonly BoostPress[] = []): OnlineResult {
   let series = newSeries()
   const log: RoundLog[] = []
   let ticks = 0
@@ -35,7 +49,12 @@ export function runOnlineMatch(team1: readonly string[], team2: readonly string[
     if (guard > 30) throw new Error('match did not converge')
     const sim = new CombatSimulation(team1, team2, roundSeed(combatSeed >>> 0, series.attempt), bonus)
     const events: CombatEvent[] = []
-    while (sim.winner === null) events.push(...sim.step())
+    const mine = presses.filter(p => p.attempt === series.attempt).sort((a, b) => a.tick - b.tick || a.unit - b.unit)
+    let next = 0
+    while (sim.winner === null) {
+      while (next < mine.length && mine[next]!.tick <= sim.tick + 1) { if (mine[next]!.tick === sim.tick + 1) sim.boost(mine[next]!.unit); next++ } // applied just before the step that makes `tick`
+      events.push(...sim.step())
+    }
     log.push({ round: log.length + 1, winner: sim.winner, ticks: sim.tick, events })
     ticks += sim.tick
     series = recordRound(series, sim.winner)

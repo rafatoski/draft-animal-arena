@@ -14,10 +14,12 @@ import { fireLaser } from '../game/robotArt'
 import { spriteKit, preloadFighterSprites } from '../game/fighterSprites'
 import type { SpriteKit } from '../game/spriteKit'
 import type { TextKey } from '../services/i18n'
-import { CombatSimulation } from '../simulation/combat'
+import { BOOST, CombatSimulation } from '../simulation/combat'
 import type { CombatEvent, Team, Unit, Winner } from '../simulation/combat'
-import { dlog, fetchReward, getProfile, myBonus, ownedFighters, practiceMatch, refreshProfile, waitForResult } from '../services/online'
+import { boostChannel, dlog, fetchReward, finishPractice, getProfile, myBonus, ownedFighters, refreshProfile, settleMatch, startPractice } from '../services/online'
 import { draftMatch, newSeed } from '../game/match'
+import { Lockstep } from '../game/lockstep'
+import type { BoostPress } from '../game/onlineSim'
 import { newSeries, recordRound, roundSeed, isFinalRound, WINS_NEEDED } from '../game/series'
 import type { Series } from '../game/series'
 import type { MatchSetup } from '../game/match'
@@ -25,16 +27,18 @@ import { t, fighterName } from '../services/i18n'
 import { audio } from '../services/audio'
 import { panel, button, entrance, navigate, PALETTE } from '../ui/components'
 import { miniFighterCard } from '../ui/miniFighterCard'
-import { preloadCardArt } from '../ui/collectibleCard'
+import { cardKey, preloadCardArt } from '../ui/collectibleCard'
+import { CARD_REFERENCE, illustrationCrop } from '../ui/cardLayout'
 import { GAME_FONT_FAMILY } from '../ui/typography'
 import { battleBackground } from '../ui/arcadeBackground'
 import { abilityEffect } from '../ui/abilityEffects'
 
 const DEATH_RANK = 4
+const BOOST_BTN = { d: 100, gap: 60, lift: 190 } // diameter, space between, distance of their centre from the bottom edge
 type Phase = 'ready' | 'draft' | 'countdown' | 'battle' | 'roundEnd' | 'result'
 interface UnitView { root: Phaser.GameObjects.Container; art: Phaser.GameObjects.Container; health: Phaser.GameObjects.Graphics; hpText: Phaser.GameObjects.Text; name: Phaser.GameObjects.Text
   /** Spritesheet fighters only. `busy` is the one-shot priority: 0 none, 1 attack, 2 hit, 3 ability, 4 death. */
-  sprite?: Phaser.GameObjects.Sprite; kit?: SpriteKit; busy: number; px: number; py: number }
+  sprite?: Phaser.GameObjects.Sprite; kit?: SpriteKit; busy: number; px: number; py: number; ring: Phaser.GameObjects.Ellipse }
 /** Online match handed over by the lobby: the server's match id, which side this viewer is, and both names. */
 export interface OnlineLaunch { matchId: string; roomId: string; viewer: Team; names: { player: string; ai: string } }
 const RIVAL_NAMES = ['Rocky', 'Luna', 'Max', 'Bella', 'Rex', 'Nova'] // demo opponent names until real matchmaking exists
@@ -78,11 +82,26 @@ export class ArenaScene extends Phaser.Scene {
   /** Practice reward verified by the server before the replay starts; shown on the results screen only after the fight. */
   private practiceReward?: RewardInfo
   private serverPracticeWin?: boolean
+  /** My accepted hype presses of the whole match: the server replays the fight with them to confirm the result. */
+  private presses: BoostPress[] = []
+  private practiceRequest?: string
+  /** Online only: both simulations advance in lockstep, exchanging presses over a broadcast channel. */
+  private lock?: Lockstep
+  private net?: ReturnType<typeof boostChannel>
+  private lastSync?: ReturnType<Lockstep['message']>
+  private stallMs = 0
+  private peerGone = false
+  private stallText?: Phaser.GameObjects.Text
+  /** Hype buttons under the arena. */
+  private boosts?: Phaser.GameObjects.Container
+  private boostGfx?: { back: Phaser.GameObjects.Graphics; front: Phaser.GameObjects.Graphics }
+  private boostFaces: Phaser.GameObjects.Image[] = []
 
   constructor() { super('Arena') }
   init(data: { match?: MatchSetup; practice?: boolean; online?: OnlineLaunch } = {}) {
     this.practice = !!(data.practice || data.match?.practice); this.online = data.online; this.viewer = data.online?.viewer ?? 'player'
-    this.practiceReward = undefined; this.serverPracticeWin = undefined
+    this.practiceReward = undefined; this.serverPracticeWin = undefined; this.presses = []; this.practiceRequest = undefined
+    this.lock = undefined; this.net = undefined; this.lastSync = undefined; this.stallMs = 0; this.peerGone = false
   }
   /** The world is mirrored top-to-bottom for the 'ai' viewer so their own team is always at the bottom. */
   private vy(y: number) { return this.viewer === 'player' ? y : 870 - y }
@@ -116,12 +135,20 @@ export class ArenaScene extends Phaser.Scene {
     this.exit = exitControl(this, () => navigate(this, 'Menu')).setDepth(1100)
     this.hud.add(this.exit)
     this.buildScoreboard(data.match?.seed ?? this.seed)
+    this.stallText = this.label(0, 0, t('waitingRival'), 18, '#ffd367').setOrigin(.5).setStroke('#173f46', 5).setVisible(false)
+    if (this.online) { // lockstep link to the rival; stays open 3 s after the scene ends so the rival still receives my last frontier
+      const peerUnits = this.viewer === 'player' ? [3, 4, 5] : [0, 1, 2]
+      this.lock = new Lockstep(peerUnits)
+      const lock = this.lock, net = this.net = boostChannel(this.online.matchId, message => lock.receive(message))
+      this.time.addEvent({ delay: 250, loop: true, callback: () => { if (this.lastSync) net.send(this.lastSync) } })
+      this.events.once('shutdown', () => { setTimeout(() => net.close(), 3000) })
+    }
     this.scale.on(Phaser.Scale.Events.RESIZE, this.resizeArena, this)
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.scale.off(Phaser.Scale.Events.RESIZE, this.resizeArena, this))
     const onKey = (event: KeyboardEvent) => {
       if (event.repeat) return
       if (event.key === 'Escape') navigate(this, 'Menu')
-      if (/^[1-8]$/.test(event.key)) { audio.unlock(); this.select(Number(event.key) - 1) }
+      if (/^[1-8]$/.test(event.key)) { audio.unlock(); this.select(Number(event.key) - 1); this.boostPress(Number(event.key) - 1) }
     }
     this.input.keyboard?.on('keydown', onKey)
     this.events.once('shutdown', () => this.input.keyboard?.off('keydown', onKey))
@@ -139,8 +166,8 @@ export class ArenaScene extends Phaser.Scene {
   }
   private drawArena() {
     createColosseum(this, this.world)
-    // Team names sit on the two green banners painted into the arena art (source-image landmarks).
-    for (const [sy, key] of [[134.5, 'other'], [808, 'weirdos']] as const) {
+    // The rival's name sits on the green banner painted into the arena art (source-image landmark); the bottom banner stays bare.
+    for (const [sy, key] of [[134.5, 'other']] as const) {
       const at = sourceToWorld(836, sy)
       const label = this.label(at.x, at.y, t(key), 17, '#ffffff').setOrigin(.5).setStroke('#173f46', 6).setDepth(-60)
       if (label.width > 190) label.setScale(190 / label.width)
@@ -155,6 +182,8 @@ export class ArenaScene extends Phaser.Scene {
     this.cameras.main.setViewport(layout.viewport.x * DPR, layout.viewport.y * DPR, layout.viewport.width * DPR, layout.viewport.height * DPR)
       .setZoom(layout.zoom * DPR).centerOn(layout.centerX, layout.centerY)
     const drafting = this.phase === 'ready' || this.phase === 'draft'
+    this.stallText?.setPosition(width / 2, height / 2)
+    this.boosts?.setVisible(!drafting).setPosition(width / 2, height - BOOST_BTN.lift).setScale(Math.min(1, (width - 16) / (3 * BOOST_BTN.d + 2 * BOOST_BTN.gap)))
     this.hudBackdrop.clear()
     if (drafting) {
       const fit = portraitLayout(this.scale.width, this.scale.height)
@@ -235,12 +264,11 @@ export class ArenaScene extends Phaser.Scene {
   /** Signed-in practice: the server picks the seed, simulates the match and records the reward; this scene only replays it. */
   private async startVerifiedPractice() {
     this.phase = 'countdown' // inert while waiting for the server
-    const launch = await practiceMatch(this.match.player)
+    const launch = await startPractice(this.match.player)
     if (!this.sys.isActive()) return
     if (launch) {
-      this.match = { ...this.match, ai: launch.robots, combatSeed: launch.combatSeed, bonus: { player: launch.bonus } } // the server's upgrade snapshot
-      this.serverPracticeWin = launch.playerWon
-      this.practiceReward = !launch.playerWon ? undefined : launch.limited ? { status: 'limited' } : { status: 'ok', coins: launch.coins, diamonds: launch.diamonds }
+      this.match = { ...this.match, ai: launch.robots, combatSeed: launch.combatSeed, bonus: { player: launch.bonus } } // the server's seed and upgrade snapshot
+      this.practiceRequest = launch.requestId // the server decides the result after the fight, from the presses reported in showResult
     } else this.practiceReward = { status: 'failed' } // still playable, but no reward is claimed
     this.beginBattle()
   }
@@ -253,9 +281,10 @@ export class ArenaScene extends Phaser.Scene {
     this.phase = 'countdown'; this.ui.removeAll(true)
     this.draftClock = undefined; this.draftBar = undefined
     for (const view of this.views.values()) { this.tweens.killTweensOf([view.root, view.art]); view.root.destroy() }
-    this.views.clear(); this.accumulator = 0
+    this.views.clear(); this.accumulator = 0; this.lock?.startRound(); this.lastSync = undefined; this.stallMs = 0; this.stallText?.setVisible(false)
     this.simulation = new CombatSimulation(this.match.player, this.match.ai, roundSeed(this.match.combatSeed, this.series.attempt), this.match.bonus)
     for (const unit of this.simulation.units) this.createUnit(unit)
+    this.buildBoosts()
     this.updateHud(); this.resizeArena()
     // Every round: title banner, 3-2-1, then FIGHT!
     this.banner(isFinalRound(this.series) ? t('finalRound') : t('roundN', { n: this.series.round }),
@@ -305,13 +334,74 @@ export class ArenaScene extends Phaser.Scene {
     const hpText = this.add.text(0, -55.5, '', { fontFamily: GAME_FONT_FAMILY, fontSize: 9, color: C.cream }).setOrigin(.5).setStroke('#173f46', 3)
     const root = this.add.container(unit.x, this.vy(unit.y), [ring, art, health, name, hpText])
     this.world.add(root)
-    const view: UnitView = { root, art, health, hpText, name, sprite, kit, busy: 0, px: unit.x, py: this.vy(unit.y) }
+    const view: UnitView = { root, art, health, hpText, name, sprite, kit, busy: 0, px: unit.x, py: this.vy(unit.y), ring }
     // Clears the one-shot lock; the sprite owns this listener, so it is destroyed with it each round.
     sprite?.on(Phaser.Animations.Events.ANIMATION_COMPLETE, () => {
       if (view.busy < DEATH_RANK) view.busy = 0 // every one-shot but death hands control back to idle / walk
     })
     this.views.set(unit.id, view)
     this.drawHealth(unit)
+  }
+  /** Round copy of the fighter's card illustration, cached per fighter. */
+  private faceTexture(id: string) {
+    const key = `face-${id}`, size = Math.round(BOOST_BTN.d * 3)
+    if (!this.textures.exists(key) && this.textures.exists(cardKey(id))) {
+      const card = this.textures.get(cardKey(id)).getSourceImage() as HTMLImageElement
+      const crop = illustrationCrop(1), k = card.width / CARD_REFERENCE.width
+      const canvas = this.textures.createCanvas(key, size, size)!, ctx = canvas.getContext()
+      ctx.beginPath(); ctx.arc(size / 2, size / 2, size / 2, 0, Math.PI * 2); ctx.clip()
+      ctx.drawImage(card, crop.x * k, crop.y * k, crop.width * k, crop.height * k, 0, 0, size, size)
+      canvas.refresh()
+    }
+    return this.textures.exists(key) ? key : undefined
+  }
+  private buildBoosts() {
+    this.boosts?.destroy(); this.boosts = undefined; this.boostFaces = []
+    const back = this.add.graphics(), front = this.add.graphics(), { d, gap } = BOOST_BTN
+    this.boostGfx = { back, front }
+    const parts: Phaser.GameObjects.GameObject[] = [back]
+    this.simulation!.units.filter(u => u.team === this.viewer).forEach((unit, i) => {
+      const x = (i - 1) * (d + gap), key = this.faceTexture(unit.definition.id)
+      if (key) { const face = this.add.image(x, 0, key).setDisplaySize(d - 8, d - 8); this.boostFaces.push(face); parts.push(face) }
+      const zone = this.add.zone(x, 0, d, d).setInteractive({ hitArea: new Phaser.Geom.Circle(d / 2, d / 2, d / 2), hitAreaCallback: Phaser.Geom.Circle.Contains, useHandCursor: true })
+      zone.on('pointerdown', () => { audio.unlock(); this.boostPress(i) })
+      parts.push(zone)
+    })
+    parts.push(front)
+    this.boosts = this.add.container(0, 0, parts); this.hud.add(this.boosts)
+    this.drawBoosts()
+  }
+  /** Hype button of my i-th fighter: one boost per team at a time, rules enforced by the simulation. */
+  private boostPress(slot: number) {
+    const sim = this.simulation
+    if (this.phase !== 'battle' || !sim || !this.boosts || slot < 0 || slot > 2) return
+    const unit = sim.units[(this.viewer === 'player' ? 0 : 3) + slot]!
+    if (!sim.canBoost(unit.id)) return
+    if (this.lock) { // online: scheduled a few ticks ahead so the rival's screen applies it on the very same tick
+      if (this.lock.pendingUnit(sim.tick) !== undefined) return
+      this.lock.schedule(sim.tick, unit.id)
+      this.lastSync = this.lock.message(this.series.attempt, sim.tick); this.net?.send(this.lastSync)
+    } else sim.boost(unit.id)
+    audio.effect('tap'); this.floatText(unit.x, this.vy(unit.y), t('hype'), '#ffd367')
+  }
+  /** Per frame: pressed = the circle shrinks while boosted; a radial sweep (dark wedge + yellow radius line) fills as the button recharges. */
+  private drawBoosts() {
+    const sim = this.simulation, g = this.boostGfx
+    if (!sim || !g || !this.boosts) return
+    g.back.clear(); g.front.clear()
+    const mine = sim.units.filter(u => u.team === this.viewer), pending = this.lock?.pendingUnit(sim.tick), busy = pending !== undefined || mine.some(u => u.boost > 0), { d, gap } = BOOST_BTN
+    mine.forEach((u, i) => {
+      const pressed = u.boost > 0 || u.id === pending, x = (i - 1) * (d + gap), ready = u.hp > 0 && u.boostCooldown === 0 && !busy, r = pressed ? d / 2 * .82 : d / 2
+      g.back.fillStyle(pressed ? 0xffd367 : ready ? 0xb9ee96 : 0x3a2f5c, u.hp > 0 ? 1 : .4).fillCircle(x, 0, r)
+      this.boostFaces[i]?.setDisplaySize(2 * r - 8, 2 * r - 8).setAlpha(u.hp <= 0 ? .15 : pressed || ready ? .6 : .3)
+      if (u.hp > 0 && !ready) {
+        const fill = u.id === pending ? 1 : u.boost > 0 ? u.boost / BOOST.duration : 1 - u.boostCooldown / (BOOST.duration + BOOST.recharge)
+        const start = -Math.PI / 2, angle = start + Math.PI * 2 * fill
+        g.front.fillStyle(0x0d2a30, .5).slice(x, 0, r, angle, start + Math.PI * 2, false).fillPath() // part still to charge
+        g.front.lineStyle(3, pressed ? 0xff8c79 : 0xffd367).lineBetween(x, 0, x + Math.cos(angle) * r, Math.sin(angle) * r)
+      }
+      g.front.lineStyle(4, 0x173f46).strokeCircle(x, 0, r)
+    })
   }
   private drawHealth(unit: Unit) {
     const { health, hpText } = this.views.get(unit.id)!
@@ -435,6 +525,8 @@ export class ArenaScene extends Phaser.Scene {
   private endRound(winner: Winner) {
     this.phase = 'roundEnd'
     this.totalTicks += this.simulation!.tick
+    const own = this.viewer === 'player' ? [0, 1, 2] : [3, 4, 5]
+    for (const press of this.simulation!.inputs) if (own.includes(press.unit)) this.presses.push({ attempt: this.series.attempt, ...press }) // seed index of the round just played
     this.series = recordRound(this.series, winner)
     this.updateHud()
     if (this.series.winner) { this.phase = 'result'; this.time.delayedCall(750, () => this.online ? void this.showOnlineResult() : void this.showResult()); return }
@@ -444,7 +536,7 @@ export class ArenaScene extends Phaser.Scene {
   /** The server's stored result is the verdict; the local replay only has to look the same. */
   private async showOnlineResult() {
     const online = this.online!, me = getProfile()?.id
-    const match = await waitForResult(online.matchId)
+    const match = await settleMatch(online.matchId, this.presses)
     dlog('result', { room: online.roomId, match: online.matchId, status: match?.status, winner: match?.winnerId, score: `${match?.score1}-${match?.score2}` })
     await refreshProfile()
     const iWon = match ? match.winnerId === me : this.series.winner === this.viewer
@@ -460,6 +552,13 @@ export class ArenaScene extends Phaser.Scene {
     })
   }
   private async showResult() {
+    if (this.practiceRequest) { // the server replays the fight with my presses; its verdict and reward are the official ones
+      const verdict = await finishPractice(this.practiceRequest, this.presses)
+      if (verdict) {
+        this.serverPracticeWin = verdict.playerWon
+        this.practiceReward = !verdict.playerWon ? undefined : verdict.limited ? { status: 'limited' } : { status: 'ok', coins: verdict.coins, diamonds: verdict.diamonds }
+      } else this.practiceReward = { status: 'failed' }
+    }
     const winner = this.serverPracticeWin === undefined ? this.series.winner! : this.serverPracticeWin ? 'player' : 'ai' // the server's verdict wins
     let reward = this.practiceReward
     if (this.practice && winner === 'player' && !getProfile() && getGuest()) reward = { status: 'session', coins: guestPracticeWin() }
@@ -479,15 +578,29 @@ export class ArenaScene extends Phaser.Scene {
       if (this.draftRemaining === 0) this.lockDraft()
     }
     if (this.phase !== 'battle' || !this.simulation) return
+    this.drawBoosts()
     // Cap catch-up after suspended tabs. Simulation never takes variable steps.
     this.accumulator += Math.min(delta, 250)
     while (this.accumulator >= CONFIG.tickMs && this.phase === 'battle') {
+      const sim = this.simulation
+      if (this.lock && !this.peerGone) {
+        if (!this.lock.ready(this.series.attempt, sim.tick + 1)) { // the rival's presses for this tick are not known yet: wait, never guess
+          this.stallMs += delta; this.accumulator = Math.min(this.accumulator, CONFIG.tickMs * 3)
+          this.stallText?.setVisible(this.stallMs > 400)
+          if (this.stallMs > 10000) this.peerGone = true // rival vanished: play on without them, the server replays with whatever they reported
+          break
+        }
+        this.stallMs = 0; this.stallText?.setVisible(false)
+        for (const unit of this.lock.due(this.series.attempt, sim.tick + 1)) sim.boost(unit)
+      }
       this.accumulator -= CONFIG.tickMs
       const events = this.simulation.step()
+      if (this.lock) { this.lastSync = this.lock.message(this.series.attempt, sim.tick); if (sim.tick % 2 === 0 || sim.winner !== null) this.net?.send(this.lastSync) }
       for (const unit of this.simulation.units) {
         const view = this.views.get(unit.id)!
         const sy = this.vy(unit.y)
         view.root.setPosition(unit.x, sy).setDepth(sy)
+        view.ring.setFillStyle(unit.boost > 0 ? 0xffd367 : unit.team === this.viewer ? 0xb9ec91 : 0xf69383, unit.boost > 0 ? .9 : .6)
         if (view.sprite) {
           if (unit.hp <= 0) continue
           const dx = unit.x - view.px

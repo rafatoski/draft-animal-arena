@@ -72,3 +72,64 @@ test('invalid rosters fail early', () => {
   assert.throws(() => new CombatSimulation(['chicken', 'chicken', 'frog'], ai, 1))
   assert.throws(() => new CombatSimulation(['chicken', 'unknown', 'frog'], ai, 1))
 })
+test('hype boost: one per team, 2 s + 2 s recharge, same input log replays identically', () => {
+  const sim = new CombatSimulation(player, ai, 7)
+  assert.equal(sim.boost(0), true)
+  assert.equal(sim.boost(1), false, 'a teammate is already boosted')
+  assert.equal(sim.boost(3), true, 'the other team has its own slot')
+  for (let i = 0; i < 40; i++) sim.step()
+  assert.equal(sim.units[0].boost, 0)
+  assert.equal(sim.boost(0), false, 'still recharging')
+  assert.equal(sim.boost(1), true)
+  for (let i = 0; i < 40; i++) sim.step()
+  assert.equal(sim.boost(0), true, 'recharged 2 s after the boost ended')
+  const replay = new CombatSimulation(player, ai, 7)
+  for (let tick = 1; replay.tick < sim.tick; tick++) {
+    for (const input of sim.inputs) if (input.tick === replay.tick + 1) replay.boost(input.unit)
+    replay.step()
+  }
+  assert.deepEqual(replay.units.map(u => [u.x, u.y, u.hp]), sim.units.map(u => [u.x, u.y, u.hp]))
+})
+test('boosted fighter deals 25% more damage', () => {
+  const hits = (boosted) => {
+    const sim = new CombatSimulation(player, ai, 3)
+    if (boosted) for (const id of [0, 3]) sim.boost(id)
+    let first
+    while (!first && sim.winner === null) first = sim.step().find(e => e.type === 'hit' && !e.critical && !e.ability)
+    return first
+  }
+  assert.ok(hits(true).damage > hits(false).damage)
+})
+test('lockstep: two clients with delayed, reordered, duplicated messages stay identical to each other and to the server replay', async () => {
+  const { Lockstep, INPUT_DELAY } = await import('../.test-build/game/lockstep.js')
+  const { runOnlineMatch } = await import('../.test-build/game/onlineSim.js')
+  const mk = () => new CombatSimulation(player, ai, 99)
+  const a = { sim: mk(), lock: new Lockstep([3, 4, 5]), units: [0, 1, 2] }, b = { sim: mk(), lock: new Lockstep([0, 1, 2]), units: [3, 4, 5] }
+  const wire = [] // [deliverAtTick, to, message]
+  const rng = new SeededRandom(5)
+  const send = (now, from, to) => { const m = JSON.parse(JSON.stringify(from.lock.message(0, from.sim.tick))); for (let k = 0; k < 1 + (rng.next() < .3); k++) wire.push([now + Math.floor(rng.next() * 4), to, m]) }
+  let guard = 0
+  while ((a.sim.winner === null || b.sim.winner === null) && guard++ < 20000) {
+    for (let i = wire.length - 1; i >= 0; i--) if (wire[i][0] <= guard / 2) { wire[i][1].lock.receive(wire[i][2]); wire.splice(i, 1) }
+    for (const [me, other] of [[a, b], [b, a]]) {
+      if (me.sim.winner !== null) continue
+      if (rng.next() < .04) { const unit = me.units[Math.floor(rng.next() * 3)]; if (me.sim.canBoost(unit) && me.lock.pendingUnit(me.sim.tick) === undefined) me.lock.schedule(me.sim.tick, unit) }
+      const next = me.sim.tick + 1
+      if (!me.lock.ready(0, next)) { send(guard / 2, me, other); continue }
+      for (const unit of me.lock.due(0, next)) me.sim.boost(unit)
+      me.sim.step(); send(guard / 2, me, other)
+    }
+  }
+  assert.equal(a.sim.winner, b.sim.winner); assert.notEqual(a.sim.winner, null)
+  assert.deepEqual(a.sim.units.map(u => [u.x, u.y, u.hp]), b.sim.units.map(u => [u.x, u.y, u.hp]))
+  assert.ok(a.sim.inputs.length > 3, 'presses actually happened')
+  const presses = a.sim.inputs.map(i => ({ attempt: 0, ...i }))
+  assert.deepEqual(presses.sort((x, y) => x.tick - y.tick || x.unit - y.unit), b.sim.inputs.map(i => ({ attempt: 0, ...i })).sort((x, y) => x.tick - y.tick || x.unit - y.unit))
+  // the server replay (round 1 only, same seed) reaches the same first-round verdict
+  const replay = new CombatSimulation(player, ai, 99); let next = 0
+  const sorted = presses
+  while (replay.winner === null) { while (next < sorted.length && sorted[next].tick <= replay.tick + 1) { if (sorted[next].tick === replay.tick + 1) replay.boost(sorted[next].unit); next++ } replay.step() }
+  assert.equal(replay.winner, a.sim.winner); assert.deepEqual(replay.units.map(u => u.hp), a.sim.units.map(u => u.hp))
+  assert.ok(INPUT_DELAY >= 2)
+  assert.equal(typeof runOnlineMatch, 'function')
+})

@@ -15,6 +15,8 @@ export interface Unit {
   stun: number; disarm: number; cloak: number; dodges: number; poison: number; poisonDamage: number
   /** Ticks until each of the fighter's abilities is ready again. */
   abilityCooldown: Partial<Record<AbilityId, number>>
+  /** Player-triggered hype: ticks of boost left, and ticks until this fighter's button is ready again. */
+  boost: number; boostCooldown: number
 }
 export type CombatEvent =
   | { type: 'hit'; source: number; target: number; damage: number; critical: boolean; ability?: AbilityId }
@@ -26,8 +28,12 @@ export type CombatEvent =
   | { type: 'end'; winner: Winner }
 /** Damage of one hit: defence is a ratio (def 40 = -40%, def 20 = -25%), never a flat subtraction, so low-attack / high-defence stat lines stay meaningful. */
 export const mitigated = (attack: number, defense: number, multiplier = 1) => Math.max(1, Math.round(attack * multiplier * 60 / (60 + defense)))
+/** Euclidean length via sqrt, which IEEE 754 rounds exactly in every engine (Math.hypot may differ in the last bit), so two clients stay in lockstep. */
+const length = (dx: number, dy: number) => Math.sqrt(dx * dx + dy * dy)
 /** Speed stat -> pixels per second. */
 export const moveSpeed = (speed: number) => 30 + 2 * speed
+/** Hype button: 2 s of +25% damage, +25% speed and cooldowns running 25% faster; the button then needs 2 s more. One boost per team at a time. */
+export const BOOST = { duration: 40, recharge: 40, power: 1.25, speed: 1.25, haste: 1.25 }
 /** Pure simulation. One step is always 50ms, regardless of display frame rate.
  * Nearest-target ties resolve by unit id; attacks resolve simultaneously.
  */
@@ -35,6 +41,8 @@ export class CombatSimulation {
   readonly units: Unit[]
   readonly random: SeededRandom
   tick = 0
+  /** Every accepted boost press (applied from `tick`), so a fight can be replayed or verified. */
+  readonly inputs: { tick: number; unit: number }[] = []
   winner: Winner | null = null
   /** `bonus` = permanent upgrade points per side and fighter, added to the base attack / defense / speed. Absent = base stats. */
   constructor(player: readonly string[], ai: readonly string[], seed: number, bonus: { player?: TeamBonus; ai?: TeamBonus } = {}) {
@@ -47,7 +55,7 @@ export class CombatSimulation {
       const definition = extra ? { ...base, attack: base.attack + (extra.attack ?? 0), defense: base.defense + (extra.defense ?? 0), speed: base.speed + (extra.speed ?? 0) } : base
       return { id: teamIndex * 3 + slot, team: teamIndex === 0 ? 'player' as const : 'ai' as const,
         definition, x: 120 + slot * 120, y: teamIndex === 0 ? 605 : 265,
-        hp: definition.health, cooldown: 0, stun: 0, disarm: 0, cloak: 0, dodges: 0, poison: 0, poisonDamage: 0,
+        hp: definition.health, cooldown: 0, stun: 0, disarm: 0, cloak: 0, dodges: 0, poison: 0, poisonDamage: 0, boost: 0, boostCooldown: 0,
         abilityCooldown: Object.fromEntries((definition.abilities ?? []).map(a => [a, ABILITIES[a].initial])) }
     }))
   }
@@ -57,10 +65,24 @@ export class CombatSimulation {
     events.push({ type: 'hit', source: source.id, target: target.id, damage, critical, ...(ability && { ability }) })
     return true
   }
-  private hurt(source: Unit, target: Unit, multiplier: number) { return mitigated(source.definition.attack, target.definition.defense, multiplier) }
+  private hurt(source: Unit, target: Unit, multiplier: number) { return mitigated(source.definition.attack, target.definition.defense, multiplier * (source.boost > 0 ? BOOST.power : 1)) }
+  private pace(unit: Unit) { return moveSpeed(unit.definition.speed) * (unit.boost > 0 ? BOOST.speed : 1) }
+  /** Whether the hype button of one of your fighters could be pressed now: alive, recharged, and no teammate boosted. */
+  canBoost(unitId: number) {
+    const unit = this.units[unitId]
+    return this.winner === null && !!unit && unit.hp > 0 && unit.boostCooldown === 0 && !this.units.some(u => u.team === unit.team && u.boost > 0)
+  }
+  /** Press that button. Takes effect on the next step and is logged in `inputs`. */
+  boost(unitId: number) {
+    if (!this.canBoost(unitId)) return false
+    const unit = this.units[unitId]!
+    unit.boost = BOOST.duration; unit.boostCooldown = BOOST.duration + BOOST.recharge
+    this.inputs.push({ tick: this.tick + 1, unit: unitId })
+    return true
+  }
   /** Uses the first ready, usable ability of `unit` (this tick's action). Pure function of the state: no randomness. */
   private useAbility(unit: Unit, enemies: Unit[], at: Map<number, { x: number; y: number }>, events: CombatEvent[]) {
-    const o = at.get(unit.id)!, dist = (e: Unit) => Math.hypot(at.get(e.id)!.x - o.x, at.get(e.id)!.y - o.y)
+    const o = at.get(unit.id)!, dist = (e: Unit) => length(at.get(e.id)!.x - o.x, at.get(e.id)!.y - o.y)
     const near = enemies[0]!, d0 = dist(near), range = unit.definition.range
     for (const id of unit.definition.abilities ?? []) {
       if ((unit.abilityCooldown[id] ?? 0) > 0) continue
@@ -96,7 +118,7 @@ export class CombatSimulation {
         const victims = enemies.filter(e => dist(e) <= ABILITIES.blackout.radius).slice(0, ABILITIES.blackout.targets)
         if (!victims.length) continue
         events.push({ type: 'ability', source: unit.id, ability: id, targets: victims.map(e => e.id) })
-        const t = at.get(victims[0]!.id)!, d = Math.hypot(t.x - o.x, t.y - o.y) || 1, k = (d - (range - 4)) / d
+        const t = at.get(victims[0]!.id)!, d = length(t.x - o.x, t.y - o.y) || 1, k = (d - (range - 4)) / d
         unit.x += (t.x - o.x) * k; unit.y += (t.y - o.y) * k // reappears beside the nearest victim
         for (const e of victims) {
           const total = this.hurt(unit, e, ABILITIES.blackout.damage) * ABILITIES.blackout.hits // a rapid combination: each hit is reduced by defence
@@ -112,7 +134,7 @@ export class CombatSimulation {
   }
   /** In reach but waiting on the cooldown: ranged fighters kite back, melee fighters step away after a swing, everyone else circles the target. (ux, uy) points at it. */
   private reposition(unit: Unit, ux: number, uy: number, distance: number) {
-    const { speed, range, cooldown } = unit.definition, step = moveSpeed(speed) * CONFIG.tickMs / 1000
+    const { range, cooldown } = unit.definition, step = this.pace(unit) * CONFIG.tickMs / 1000
     const back = range >= 100 ? distance < range * .5 : unit.cooldown > cooldown / 2
     const side = (unit.id + Math.floor(this.tick / 24)) % 2 ? 1 : -1 // flips every 1.2 s
     const [mx, my] = back ? [-ux * .5, -uy * .5] : [-uy * side * .5, ux * side * .5]
@@ -132,8 +154,11 @@ export class CombatSimulation {
     // Snapshot targeting and movement avoid iteration-order movement advantages.
     const positions = new Map(alive.map(u => [u.id, { x: u.x, y: u.y }]))
     for (const unit of alive) {
-      unit.cooldown = Math.max(0, unit.cooldown - 1)
-      for (const id of unit.definition.abilities ?? []) unit.abilityCooldown[id] = Math.max(0, (unit.abilityCooldown[id] ?? 0) - 1)
+      const haste = unit.boost > 0 ? BOOST.haste : 1
+      unit.cooldown = Math.max(0, unit.cooldown - haste)
+      for (const id of unit.definition.abilities ?? []) unit.abilityCooldown[id] = Math.max(0, (unit.abilityCooldown[id] ?? 0) - haste)
+      if (unit.boost > 0) unit.boost--
+      if (unit.boostCooldown > 0) unit.boostCooldown--
       if (unit.cloak > 0 && --unit.cloak === 0) unit.dodges = 0 // stealth always runs out
       const stunned = unit.stun > 0, disarmed = unit.disarm > 0
       if (unit.stun > 0) unit.stun--
@@ -143,21 +168,21 @@ export class CombatSimulation {
       const enemies = alive.filter(e => e.team !== unit.team)
       enemies.sort((a, b) => {
         const pa = positions.get(a.id)!, pb = positions.get(b.id)!
-        return Math.hypot(pa.x - origin.x, pa.y - origin.y) - Math.hypot(pb.x - origin.x, pb.y - origin.y) || a.id - b.id
+        return length(pa.x - origin.x, pa.y - origin.y) - length(pb.x - origin.x, pb.y - origin.y) || a.id - b.id
       })
       const target = enemies[0]
       if (!target) continue
       if (!disarmed && unit.definition.abilities && this.useAbility(unit, enemies, positions, events)) continue
       const destination = positions.get(target.id)!
       const dx = destination.x - origin.x, dy = destination.y - origin.y
-      const distance = Math.hypot(dx, dy)
+      const distance = length(dx, dy)
       if (distance > unit.definition.range) { // closes 4px inside reach, so a target that backs off one step is still hittable next tick
-        const move = Math.min(moveSpeed(unit.definition.speed) * CONFIG.tickMs / 1000, distance - unit.definition.range + 4)
+        const move = Math.min(this.pace(unit) * CONFIG.tickMs / 1000, distance - unit.definition.range + 4)
         unit.x += dx / distance * move
         unit.y += dy / distance * move
       } else if (unit.cooldown === 0 && !disarmed) {
         const critical = this.random.next() < unit.definition.crit
-        const damage = mitigated(unit.definition.attack, target.definition.defense, critical ? 1.75 : 1)
+        const damage = mitigated(unit.definition.attack, target.definition.defense, (critical ? 1.75 : 1) * (unit.boost > 0 ? BOOST.power : 1))
         this.strike(unit, target, damage, critical, events)
         unit.cooldown = unit.definition.cooldown
       } else this.reposition(unit, dx / distance, dy / distance, distance)

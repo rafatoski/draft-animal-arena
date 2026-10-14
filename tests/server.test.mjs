@@ -41,3 +41,15 @@ test('Sheets rows: headers match the spec, privacy and formula injection are han
   assert.equal(sheets.matchRows([m])[0].length, sheets.SHEETS.MATCHES.length)
   assert.equal(sheets.range('PLAYERS', 3), 'PLAYERS!A2:K4'); assert.equal(sheets.range('LEADERBOARD', 1), 'LEADERBOARD!A2:F2')
 })
+
+test('server replay with hype presses: same presses same hash, presses change the fight, foreign or malformed presses are dropped', () => {
+  const t1 = ['chicken', 'capybara', 'frog'], t2 = ['raccoon', 'fox', 'pig']
+  const presses = [{ attempt: 0, tick: 30, unit: 0 }, { attempt: 0, tick: 40, unit: 3 }, { attempt: 0, tick: 120, unit: 1 }]
+  const a = server.runOnlineMatch(t1, t2, 5, {}, presses), b = clientRun(t1, t2, 5, {}, presses)
+  assert.deepEqual([a.winner, a.score, a.ticks, a.hash], [b.winner, b.score, b.ticks, b.hash])
+  assert.notEqual(a.hash, server.runOnlineMatch(t1, t2, 5).hash)
+  const dirty = [{ attempt: 0, tick: 30, unit: 3 }, { attempt: 0, tick: 0, unit: 0 }, { attempt: 0, tick: 1.5, unit: 0 }, { attempt: 99, tick: 5, unit: 0 }, { attempt: 0, tick: 5, unit: 2 }, null, 'x']
+  assert.deepEqual(server.cleanPresses(dirty, [0, 1, 2]), [{ attempt: 0, tick: 5, unit: 2 }])
+  assert.deepEqual(server.cleanPresses('nope', [0]), [])
+  assert.equal(server.cleanPresses(Array.from({ length: 1000 }, (_, i) => ({ attempt: 0, tick: i + 1, unit: 0 })), [0]).length, 400)
+})

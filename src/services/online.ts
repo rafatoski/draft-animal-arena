@@ -4,6 +4,8 @@ import { realSession, onAuthChange } from './auth'
 import { ECONOMY } from '../game/economy'
 import { bonusFromLevels, noLevels } from '../game/upgrades'
 import type { StatLevels, TeamBonus, UpgradeStat } from '../game/upgrades'
+import type { BoostPress } from '../game/onlineSim'
+import type { SyncMessage } from '../game/lockstep'
 
 // ───────── profile + progression (read-only for the browser; the server pays out) ─────────
 export interface OnlineProfile {
@@ -204,12 +206,16 @@ export async function fetchMatch(matchId: string): Promise<OnlineMatch | null> {
       status: data.match_status, winnerId: data.winner_id, score1: data.score_1, score2: data.score_2, ticks: data.duration_ticks }
   } catch { return null }
 }
-/** Waits for the server's verdict (written when the match was started; usually already there). */
-export async function waitForResult(matchId: string, tries = 12): Promise<OnlineMatch | null> {
+/**
+ * Reports my presses and waits for the server's verdict. The server replays the fight once both players have reported
+ * (or the other is 20 s overdue), so asking again every few seconds is also what keeps a stalled match moving.
+ */
+export async function settleMatch(matchId: string, presses: readonly BoostPress[], tries = 16): Promise<OnlineMatch | null> {
   for (let i = 0; i < tries; i++) {
+    if (supabase && i % 2 === 0) { try { await supabase.functions.invoke('submit-boosts', { body: { match_id: matchId, presses } }) } catch { /* retried below */ } }
     const match = await fetchMatch(matchId)
     if (match && match.status !== 'in_progress') return match
-    await new Promise(resolve => setTimeout(resolve, 800))
+    await new Promise(resolve => setTimeout(resolve, 2500))
   }
   return null
 }
@@ -243,13 +249,34 @@ export async function fetchReward(matchId: string): Promise<Reward | null> {
   } catch { return null }
 }
 
-export interface PracticeLaunch { matchId: string; team: string[]; robots: string[]; combatSeed: number; playerWon: boolean; coins: number; diamonds: number; limited: boolean; bonus: TeamBonus }
-/** Asks the server to run a practice match: it picks the seed, simulates it and records the reward. null = could not be verified. */
-export async function practiceMatch(team: readonly string[]): Promise<PracticeLaunch | null> {
+export interface PracticeStart { requestId: string; robots: string[]; combatSeed: number; bonus: TeamBonus }
+/** Opens a practice match: the server picks and remembers the seed and the upgrade snapshot. null = could not be verified. */
+export async function startPractice(team: readonly string[]): Promise<PracticeStart | null> {
   if (!supabase || !profile) return null
   try {
-    const { data, error } = await supabase.functions.invoke('practice-match', { body: { team, request_id: crypto.randomUUID() } })
-    if (error || !data?.match_id) return null
-    return { matchId: data.match_id, team: data.team, robots: data.robot_team, combatSeed: data.combat_seed, playerWon: data.player_won, coins: data.coins, diamonds: data.diamonds ?? 0, limited: data.limited, bonus: data.bonus ?? {} }
+    const requestId = crypto.randomUUID()
+    const { data, error } = await supabase.functions.invoke('practice-match', { body: { action: 'start', team, request_id: requestId } })
+    if (error || !data?.robot_team) return null
+    return { requestId, robots: data.robot_team, combatSeed: data.combat_seed, bonus: data.bonus ?? {} }
   } catch { return null }
+}
+export interface PracticeVerdict { playerWon: boolean; coins: number; diamonds: number; limited: boolean }
+/** Reports the presses made during the fight; the server replays it, records the result and pays once (a repeat returns the same verdict). */
+export async function finishPractice(requestId: string, presses: readonly BoostPress[]): Promise<PracticeVerdict | null> {
+  if (!supabase || !profile) return null
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const { data, error } = await supabase.functions.invoke('practice-match', { body: { action: 'finish', request_id: requestId, presses } })
+      if (!error && data?.match_id) return { playerWon: data.player_won, coins: data.coins, diamonds: data.diamonds ?? 0, limited: data.limited }
+    } catch { /* one retry */ }
+  }
+  return null
+}
+
+/** Realtime broadcast between the two players of a match: only hype presses and the lockstep frontier travel here. */
+export function boostChannel(matchId: string, onSync: (message: SyncMessage) => void) {
+  if (!supabase) return { send: (_: SyncMessage) => {}, close: () => {} }
+  const channel: RealtimeChannel = supabase.channel(`boost:${matchId}`, { config: { broadcast: { self: false } } })
+    .on('broadcast', { event: 'sync' }, ({ payload }) => onSync(payload as SyncMessage)).subscribe()
+  return { send: (message: SyncMessage) => { void channel.send({ type: 'broadcast', event: 'sync', payload: message }) }, close: () => { void supabase!.removeChannel(channel) } }
 }
