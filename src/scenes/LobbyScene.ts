@@ -5,7 +5,7 @@ import { FIGHTERS } from '../game/fighters'
 import { miniFighterCard } from '../ui/miniFighterCard'
 import { preloadCardArt } from '../ui/collectibleCard'
 import { audio } from '../services/audio'
-import { isUnlocked, leaveRoom, setTeam, setReady, fetchRoomState, fetchMatch, startMatch, watchRoom, getProfile } from '../services/online'
+import { isUnlocked, leaveRoom, setTeam, setReady, fetchRoomState, fetchMatch, startMatch, watchRoom, getProfile, serverClockOffset, finalizeSelection, saveDraft } from '../services/online'
 import type { RoomState } from '../services/online'
 import type { OnlineLaunch } from './ArenaScene'
 
@@ -20,12 +20,15 @@ export class LobbyScene extends Phaser.Scene {
   private note = ''
   private starting = false
   private launched = false
+  private offset = 0
+  private finalizing = false
+  private timerText?: Phaser.GameObjects.Text
   private stop?: () => void
   constructor() { super('Lobby') }
   init(data: { roomId?: string } = {}) { this.roomId = data.roomId }
   preload() { preloadCardArt(this, FIGHTERS) }
   create() {
-    this.input.enabled = true; this.state = null; this.cards = []; this.picked = []; this.note = ''; this.starting = false; this.launched = false
+    this.input.enabled = true; this.state = null; this.cards = []; this.picked = []; this.note = ''; this.starting = false; this.launched = false; this.finalizing = false
     background(this); entrance(this); heading(this, t('lobbyTitle'), t('lobbyHint'))
     this.view = this.add.container(0, 0)
     this.events.once('shutdown', () => { this.stop?.(); this.stop = undefined })
@@ -36,10 +39,29 @@ export class LobbyScene extends Phaser.Scene {
     this.roomId = roomId
     const state = await fetchRoomState(roomId)
         if (!state || state.room.status === 'closed' || state.room.status === 'finished') { this.roomId = undefined; return navigate(this, 'Online') }
+    this.offset = await serverClockOffset()
     const me = getProfile()?.id ?? ''
     this.stop?.()
     this.stop = watchRoom(roomId, me, () => void this.sync(), online => { this.online = online; this.draw() })
     this.state = state; this.buildRoom(); this.react()
+    this.time.addEvent({ delay: 250, loop: true, callback: () => this.tick() })
+  }
+  /** Countdown to the SERVER's deadline. At zero the server is asked to finish the selection; it refuses if its own clock disagrees. */
+  private tick() {
+    const state = this.state; if (!state || !this.timerText || this.launched) return
+    const deadline = state.room.deadline
+    if (state.room.status !== 'lobby' || deadline === null) { this.timerText.setText(''); return }
+    const left = deadline - (Date.now() + this.offset)
+    if (left > 0) {
+      const urgent = left <= 5000
+      this.timerText.setText(t('selectionTime', { n: Math.ceil(left / 1000) })).setColor(urgent ? '#ff8c79' : '#ffd367').setScale(urgent ? 1 + .06 * (left % 1000) / 1000 : 1)
+      return
+    }
+    this.timerText.setText(t('selectionOver')).setColor('#ff8c79').setScale(1)
+    if (!this.finalizing) {
+      this.finalizing = true
+      void finalizeSelection(state.room.id).then(() => this.sync()).finally(() => { setTimeout(() => { this.finalizing = false }, 1000) }) // retry each second until the room moves on
+    }
   }
   private async sync() {
     if (!this.roomId || !this.sys.isActive()) return
@@ -65,7 +87,7 @@ export class LobbyScene extends Phaser.Scene {
     const name = (id: string) => state.seats.find(s => s.playerId === id)?.name ?? '…'
     const launch: OnlineLaunch = { matchId: match.id, roomId: state.room.id, viewer: me === match.player1 ? 'player' : 'ai', names: { player: name(match.player1), ai: name(match.player2) } }
     this.stop?.(); this.stop = undefined
-    for (const n of [3, 2, 1]) { this.statusText?.setText(t('startingIn', { n })).setColor('#ffd367'); await new Promise(r => setTimeout(r, 900)); if (!this.sys.isActive()) return }
+    for (const n of [3, 2, 1]) { this.statusText?.setText(t('startingIn', { n })).setColor('#ffd367'); await new Promise(r => setTimeout(r, 700)); if (!this.sys.isActive()) return }
     navigate(this, 'Arena', { match: { player: match.team1, ai: match.team2, seed: match.matchSeed, combatSeed: match.combatSeed }, online: launch })
   }
 
@@ -89,7 +111,8 @@ export class LobbyScene extends Phaser.Scene {
       this.seatTexts.push(text(this, 52, 268 + i * 58, '', 18, '#fff4d9').setOrigin(0, .5), text(this, 428, 268 + i * 58, '', 14, '#d9ccff').setOrigin(1, .5))
     }
     add(...this.seatTexts)
-    this.statusText = text(this, 240, 395, '', 15, '#fff4d9'); add(this.statusText)
+    this.timerText = text(this, 240, 372, '', 22, '#ffd367').setStroke('#173f46', 4)
+    this.statusText = text(this, 240, 404, '', 14, '#fff4d9'); add(this.timerText, this.statusText)
     FIGHTERS.forEach((fighter, i) => {
       const card = miniFighterCard(this, fighter, 130, 150, i)
       card.root.setScale(.6).setPosition(240 + ((i % 3) - 1) * 130, 468 + Math.floor(i / 3) * 118)
@@ -120,24 +143,33 @@ export class LobbyScene extends Phaser.Scene {
     this.statusText?.setText(this.note || (this.starting ? t('startingMatch') : state.seats.length < 2 ? t('waitingOpp') : mine?.team.length === 3 ? '' : t('pickTeam')))
     this.statusText?.setColor(this.note ? '#ffb9a8' : '#fff4d9')
     const label = this.readyButton?.list.find(o => o instanceof Phaser.GameObjects.Text) as Phaser.GameObjects.Text | undefined
-    label?.setText(mine?.ready ? t('notReadyBtn') : t('readyBtn'))
+    const opponentReady = state.seats.some(s => s.playerId !== me && s.ready)
+    label?.setText(!mine?.ready ? t('readyBtn') : opponentReady || this.starting ? t('readyLocked') : t('waitingOpponent'))
+    this.readyButton?.setAlpha(mine?.ready || picked.length === 3 ? 1 : .45) // enabled only with three valid fighters
   }
   private toggle(id: string) {
     const state = this.state
-    if (!state || state.room.status === 'in_match' || this.starting) return
+    const mineSeat = state?.seats.find(s => s.playerId === getProfile()?.id)
+    if (!state || state.room.status === 'in_match' || this.starting || mineSeat?.ready) return // READY locks the selection
     if (!isUnlocked(id)) { this.note = t('lockedTag'); return this.draw() }
     const next = this.picked.includes(id) ? this.picked.filter(f => f !== id) : this.picked.length < 3 ? [...this.picked, id] : this.picked
     if (next === this.picked) return
     audio.effect('tap'); this.picked = next; this.note = ''
     this.draw()
+    void saveDraft(state.room.id, next) // partial picks survive a timeout
     if (next.length === 3) void setTeam(state.room.id, next).then(r => { if (!r.ok) { this.note = t('errGeneric') } void this.sync() })
   }
   private async ready() {
     const state = this.state, me = getProfile()?.id
     if (!state || state.seats.length < 2) return
     const mine = state.seats.find(s => s.playerId === me)
-    if (!mine || mine.team.length !== 3) { this.note = t('pickTeam'); return this.draw() }
-    const result = await setReady(state.room.id, !mine.ready)
+    if (!mine || mine.ready) return // READY is a one-way confirmation
+    if (this.picked.length !== 3) { this.note = t('pickTeam'); return this.draw() }
+    if (mine.team.length !== 3 || this.picked.some(id => !mine.team.includes(id))) { // make sure the server holds exactly what is on screen
+      const saved = await setTeam(state.room.id, this.picked)
+      if (!saved.ok) { this.note = t('errGeneric'); return this.draw() }
+    }
+    const result = await setReady(state.room.id, true)
     if (!result.ok) this.note = t('errGeneric')
     void this.sync()
   }

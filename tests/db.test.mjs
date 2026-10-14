@@ -96,9 +96,12 @@ test('team validation and ready rules', async () => {
   await fails(`select public.set_team('${room.id}', '{chicken,chicken,pig}')`, /three different/)
   await fails(`select public.set_team('${room.id}', '{chicken,fox}')`, /three different/)
   await fails(`select public.set_team('${room.id}', '{chicken,fox,dragon}')`, /three different/)
-  await db.query(`select public.set_team('${room.id}', '{chicken,fox,pig}')`); await db.query(`select public.set_ready('${room.id}', true)`)
-  await db.query(`select public.set_team('${room.id}', '{chicken,fox,frog}')`) // changing the team clears ready
-  assert.equal((await q(`select ready from public.room_players where player_id = '${A}' and room_id = '${room.id}'`))[0].ready, false)
+  await db.query(`select public.set_team('${room.id}', '{chicken,fox,pig}')`); await db.query(`select public.set_team('${room.id}', '{chicken,fox,frog}')`) // free to change until READY
+  await db.query(`select public.set_ready('${room.id}', true)`)
+  assert.equal((await q(`select ready from public.room_players where player_id = '${A}' and room_id = '${room.id}'`))[0].ready, true)
+  await fails(`select public.set_team('${room.id}', '{chicken,fox,pig}')`, /selection locked/) // READY locks the selection
+  await fails(`select public.set_ready('${room.id}', false)`, /selection locked/)
+  await db.exec(`reset role; update public.room_players set ready = false where room_id = '${room.id}'`) // keep later tests' starting point
 })
 
 test('the fighter whitelist in SQL matches the game', () => {
@@ -334,4 +337,36 @@ test('quick match: two distinct players are paired once, nobody matches themselv
   await asService(); assert.deepEqual((await q('select player_id from public.matchmaking_queue')).map(r => r.player_id), [Q4])
   await asUser(Q4); await db.query('select public.cancel_quick_match()')
   await asService(); await fails('select public.quick_match()', /permission denied/) // players only, never the service role
+})
+
+test('selection deadline: set by the server clock, final selection is server-validated and auto-filled with owned fighters only', async () => {
+  const [S1, S2, S3] = [1, 2, 3].map(n => `30000000-0000-4000-8000-00000000000${n}`)
+  await db.exec(`reset role; insert into auth.users (id, is_anonymous) values ('${S1}', false), ('${S2}', false), ('${S3}', false)`)
+  await asUser(S1); const r = (await q('select * from public.create_room()'))[0]
+  assert.equal(r.selection_deadline, null) // alone in the room: no countdown yet
+  await asUser(S2); const joined = (await q(`select * from public.join_room('${r.room_code}')`))[0]
+  const left = new Date(joined.selection_deadline).getTime() - Date.now()
+  assert.ok(left > 28000 && left <= 30500, `deadline should be ~30s away, was ${left}`)
+  await asUser(S1); assert.equal(typeof (await q('select public.server_time() t'))[0].t.getTime, 'function')
+  await fails(`select public.finalize_selection('${r.id}')`, /selection time is not over/) // clients cannot end the countdown early
+  await asUser(S3); await fails(`select public.finalize_selection('${r.id}')`, /not in this room/)
+  await asUser(S1); await fails(`select public.set_team('${r.id}', '{chicken,capybara,pig}')`, /fighter not unlocked/) // locked fighters never selectable
+  await db.query(`select public.set_team('${r.id}', '{frog,chicken,capybara}')`)
+  await asUser(S2); await fails(`select public.save_draft('${r.id}', '{pig}')`, /fighter not unlocked/); await fails(`select public.save_draft('${r.id}', '{frog,frog}')`, /three different/)
+  await db.query(`select public.save_draft('${r.id}', '{capybara}')`) // S2 picked one fighter before time ran out
+  await asUser(S1)
+  // S1 picked a full team but never pressed READY; S2 picked nothing. The deadline passes.
+  await db.exec(`reset role; update public.multiplayer_rooms set selection_deadline = now() - interval '1 second' where id = '${r.id}'`)
+  await asUser(S2); await fails(`select public.set_team('${r.id}', '{frog,chicken,capybara}')`, /selection time is over/)
+  assert.equal((await q(`select public.finalize_selection('${r.id}') r`))[0].r, true)
+  assert.equal((await q(`select public.finalize_selection('${r.id}') r`))[0].r, true) // repeatable, from either player
+  await asService()
+  const seats = await q(`select player_id, team_selection, ready from public.room_players where room_id = '${r.id}'`)
+  const mine = Object.fromEntries(seats.map(s => [s.player_id, s]))
+  assert.deepEqual([...mine[S1].team_selection].sort(), ['capybara', 'chicken', 'frog']) // the valid pick is kept
+  assert.equal(mine[S2].team_selection.length, 3); assert.equal(new Set(mine[S2].team_selection).size, 3); assert.ok(mine[S2].team_selection.includes('capybara'), 'the partial pick is kept')
+  assert.ok(mine[S2].team_selection.every(id => ['chicken', 'capybara', 'frog'].includes(id)), 'auto-fill uses unlocked fighters only') // S2 owns only the starters
+  assert.ok(seats.every(s => s.ready)); assert.ok(seats.every(s => mine[s.player_id].team_selection.length === 3))
+  const m = (await q(`select * from public.begin_match('${r.id}', '${S1}')`))[0] // both ready and validated: the match can start
+  assert.equal(m.created, true)
 })

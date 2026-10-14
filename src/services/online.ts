@@ -86,12 +86,13 @@ export async function fetchLeaderboard(offset: number, limit: number): Promise<{
 
 // ───────── rooms ─────────
 export type RoomStatus = 'waiting' | 'lobby' | 'in_match' | 'finished' | 'closed'
-export interface Room { id: string; code: string; hostId: string; guestId: string | null; status: RoomStatus; matchId: string | null }
+/** `deadline` = end of the 30 s fighter selection in server-clock epoch ms (null when nobody is waiting on a countdown). */
+export interface Room { id: string; code: string; hostId: string; guestId: string | null; status: RoomStatus; matchId: string | null; deadline: number | null }
 export interface Seat { playerId: string; name: string; team: string[]; ready: boolean; rematch: boolean }
 export interface RoomState { room: Room; seats: Seat[] }
 
-const toRoom = (r: { id: string; room_code: string; host_player_id: string; guest_player_id: string | null; status: RoomStatus; current_match_id: string | null }): Room =>
-  ({ id: r.id, code: r.room_code, hostId: r.host_player_id, guestId: r.guest_player_id, status: r.status, matchId: r.current_match_id })
+const toRoom = (r: { id: string; room_code: string; host_player_id: string; guest_player_id: string | null; status: RoomStatus; current_match_id: string | null; selection_deadline?: string | null }): Room =>
+  ({ id: r.id, code: r.room_code, hostId: r.host_player_id, guestId: r.guest_player_id, status: r.status, matchId: r.current_match_id, deadline: r.selection_deadline ? Date.parse(r.selection_deadline) : null })
 export type RoomResult<T> = { ok: true; value: T } | { ok: false; message: string }
 async function rpc<T>(name: string, args: object, map: (data: unknown) => T): Promise<RoomResult<T>> {
   if (!supabase) return { ok: false, message: 'offline' }
@@ -106,6 +107,17 @@ export const leaveRoom = (roomId: string) => rpc('leave_room', { p_room: roomId 
 export const setTeam = (roomId: string, team: string[]) => rpc('set_team', { p_room: roomId, p_team: team }, () => undefined)
 export const setReady = (roomId: string, ready: boolean) => rpc('set_ready', { p_room: roomId, p_ready: ready }, () => undefined)
 /** Casts this player's rematch vote. true = both agreed and the room is back in the lobby. */
+/** Server clock minus local clock in ms (round-trip corrected), so the countdown follows the server's deadline, not this device's clock. */
+export async function serverClockOffset(): Promise<number> {
+  if (!supabase) return 0
+  try {
+    const sent = Date.now(), { data, error } = await supabase.rpc('server_time'), received = Date.now()
+    return error || !data ? 0 : Date.parse(data) - (sent + received) / 2
+  } catch { return 0 }
+}
+/** Asks the server to close the selection once its own clock says time is up (refused earlier). Fills incomplete teams with owned fighters. */
+export const finalizeSelection = (roomId: string) => rpc('finalize_selection', { p_room: roomId }, () => undefined)
+export const saveDraft = (roomId: string, picks: string[]) => rpc('save_draft', { p_room: roomId, p_picks: picks }, () => undefined)
 export const rematchRoom = (roomId: string) => rpc('rematch_room', { p_room: roomId }, d => d === true)
 
 export type QuickMatchState = { state: 'searching' } | { state: 'matched'; room: Room }

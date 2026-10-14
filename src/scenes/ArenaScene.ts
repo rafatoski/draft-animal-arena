@@ -22,7 +22,7 @@ import type { Series } from '../game/series'
 import type { MatchSetup } from '../game/match'
 import { t, fighterName } from '../services/i18n'
 import { audio } from '../services/audio'
-import { panel, entrance, navigate, PALETTE } from '../ui/components'
+import { panel, button, entrance, navigate, PALETTE } from '../ui/components'
 import { miniFighterCard } from '../ui/miniFighterCard'
 import { preloadCardArt } from '../ui/collectibleCard'
 import { GAME_FONT_FAMILY } from '../ui/typography'
@@ -67,6 +67,8 @@ export class ArenaScene extends Phaser.Scene {
   private counts!: Record<'player' | 'ai', Phaser.GameObjects.Text>
   private hearts!: Record<'player' | 'ai', Phaser.GameObjects.Image[]>
   private practice = false
+  private confirmed = false
+  private readyButton?: Phaser.GameObjects.Container
   private online?: OnlineLaunch
   /** Whose team is shown at the bottom, in friendly colours and on the left of the scoreboard. */
   private viewer: Team = 'player'
@@ -171,7 +173,7 @@ export class ArenaScene extends Phaser.Scene {
   }
   private startDraft() {
     if (this.phase !== 'ready') return
-    this.phase = 'draft'; this.ui.removeAll(true)
+    this.phase = 'draft'; this.confirmed = false; this.ui.removeAll(true)
     this.status.setText(t('draft'))
     this.subtitle.setText(t('choose'))
     this.ui.add(panel(this, 240, 438, 456, 566, 0x4a2c8a))
@@ -184,11 +186,19 @@ export class ArenaScene extends Phaser.Scene {
       card.root.on('pointerdown', () => { audio.unlock(); this.select(i) })
       this.cards.push(card); this.ui.add(card.root)
     })
-    this.ui.add(this.label(240, 810, t('auto'), 11, C.muted).setOrigin(.5))
+    this.readyButton = button(this, 240, 760, t('readyBtn'), () => this.confirm(), { color: PALETTE.mint })
+    this.ui.add([this.readyButton, this.label(240, 810, t('auto'), 11, C.muted).setOrigin(.5)])
     this.updateDraftClock()
   }
+  /** READY: only with three valid picks; locks the selection and starts immediately. */
+  private confirm() {
+    if (this.phase !== 'draft' || this.confirmed || this.selection.length !== 3) return
+    this.confirmed = true
+    this.cards.forEach(card => card.root.disableInteractive())
+    this.updateDraftClock(); this.lockDraft()
+  }
   private select(index: number) {
-    if (this.phase !== 'draft') return
+    if (this.phase !== 'draft' || this.confirmed) return
     const id = FIGHTERS[index]!.id
     if (this.cards[index]!.locked) { // locked until bought: shake instead of selecting
       this.tweens.add({ targets: this.cards[index]!.root, angle: 2, duration: 45, yoyo: true, repeat: 2 }); return
@@ -204,9 +214,14 @@ export class ArenaScene extends Phaser.Scene {
     this.updateDraftClock()
   }
   private updateDraftClock() {
-    this.draftClock?.setText(`${(this.draftRemaining / 1000).toFixed(1)}s  •  ${this.selection.length} / 3 ${t('picked')}`)
+    const urgent = this.draftRemaining <= 5000 && !this.confirmed
+    this.draftClock?.setText(`${Math.ceil(this.draftRemaining / 1000)}s  •  ${this.selection.length} / 3 ${t('picked')}`).setFontSize(24)
+      .setColor(urgent ? '#ff8c79' : C.cream).setScale(urgent ? 1 + .07 * (this.draftRemaining % 1000) / 1000 : 1) // subtle pulse in the last five seconds
+    this.readyButton?.setAlpha(this.confirmed ? 1 : this.selection.length === 3 ? 1 : .45)
+    const label = this.readyButton?.list[1] as Phaser.GameObjects.Text | undefined
+    label?.setText(t(this.confirmed ? 'readyLocked' : 'readyBtn'))
     this.draftBar?.clear().fillStyle(0x164e50).fillRoundedRect(42, 204, 396, 7, 3)
-      .fillStyle(this.draftRemaining < 1500 ? PALETTE.coral : PALETTE.yellow).fillRoundedRect(42, 204, Math.max(1, 396 * this.draftRemaining / CONFIG.draftMs), 7, 3)
+      .fillStyle(this.draftRemaining <= 5000 ? PALETTE.coral : PALETTE.yellow).fillRoundedRect(42, 204, Math.max(1, 396 * this.draftRemaining / CONFIG.draftMs), 7, 3)
   }
   private lockDraft() {
     this.match = draftMatch(this.selection, this.seed, this.practice, ownedFighters())
