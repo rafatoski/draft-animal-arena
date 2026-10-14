@@ -23,6 +23,7 @@ export class SettingsScene extends Phaser.Scene {
     text(this, 240, 551, t('saved'), 13, '#fff4d9')
     button(this, 240, 600, t('accountTitle'), () => navigate(this, 'Account'), { color: 0xffffff })
     button(this, 240, 690, `‹  ${t('back')}`, () => navigate(this, 'Menu'), { color: PALETTE.yellow })
+    text(this, 240, 800, 'Creado por Rafael Castillo © 2026', 12, '#d9ccff') // credit line: fixed text, not translated
   }
   private language(language: 'en' | 'es') {
     savePreferences({ language }); syncDocumentLanguage(); this.scene.restart()

@@ -5,7 +5,7 @@ import { background, text, navigate } from '../ui/components'
 import { homeIcon, homeNavigation } from '../ui/homeNavigation'
 import { homeLayout } from '../ui/homeLayout'
 import { preferences } from '../services/preferences'
-import { loadPlayer } from '../services/player'
+import { getGuest } from '../services/guest'
 import { getProfile, onProfile } from '../services/online'
 import { DPR } from '../rendering/pixelRatio'
 import { audio } from '../services/audio'
@@ -15,7 +15,8 @@ export class MenuScene extends Phaser.Scene {
   create() {
     this.input.enabled = true
     background(this)
-    const player = loadPlayer()
+    const sessionCoins = () => getProfile()?.coins ?? getGuest()?.coins ?? 0
+    const playerName = () => getProfile()?.displayName ?? getGuest()?.name ?? ''
     const settings = this.add.container()
     const settingsFace = this.add.graphics()
     const settingsIcon = homeIcon(this, 'settings')
@@ -32,7 +33,7 @@ export class MenuScene extends Phaser.Scene {
     })
 
     const coinsHud = this.add.container(), coinFace = this.add.graphics(), coinIcon = homeIcon(this, 'coin')
-    const coins = text(this, 0, 0, player.coins.toLocaleString(preferences.language), 17, '#fff4d9')
+    const coins = text(this, 0, 0, sessionCoins().toLocaleString(preferences.language), 17, '#fff4d9')
     coinsHud.add([coinFace, coinIcon, coins])
     // Tapping the coin pill opens the account / online screen.
     coinsHud.setInteractive(new Phaser.Geom.Rectangle(0, 0, 100, 48), Phaser.Geom.Rectangle.Contains)
@@ -42,6 +43,7 @@ export class MenuScene extends Phaser.Scene {
     const gemsHud = this.add.container(), gemFace = this.add.graphics(), gemIcon = homeIcon(this, 'gems')
     const gems = text(this, 0, 0, (getProfile()?.diamonds ?? 0).toLocaleString(preferences.language), 17, '#fff4d9')
     gemsHud.add([gemFace, gemIcon, gems])
+    const nameLabel = text(this, 0, 0, playerName(), 12, '#d9ccff').setOrigin(0, .5)
     const brand = this.add.image(0, 0, LOGO_TEXTURE)
     // Deliberately empty until the supplied illustration URL is configured.
     const illustration = this.add.container(0, 0).setName('home-illustration-slot')
@@ -80,6 +82,9 @@ export class MenuScene extends Phaser.Scene {
         value.setPosition(12, 0).setScale(1)
         if (value.width > box.width - 50) value.setScale((box.width - 50) / value.width)
       }
+      const cb = layout.topHud.coins
+      nameLabel.setScale(1).setPosition(cb.x - cb.width / 2 + 4, cb.y + cb.height / 2 + 12)
+      if (nameLabel.width > 170) nameLabel.setScale(170 / nameLabel.width)
       brand.setPosition(layout.logo.x, layout.logo.y).setScale(Math.min(layout.logo.width / brand.width, layout.logo.height / brand.height))
       illustration.setPosition(layout.illustration.x, layout.illustration.y).setSize(layout.illustration.width, layout.illustration.height)
       if (image) image.setScale(Math.min(layout.illustration.width / image.width, layout.illustration.height / image.height))
@@ -87,8 +92,8 @@ export class MenuScene extends Phaser.Scene {
     }
     resize(); this.cameras.main.fadeIn(220, 83, 66, 142)
     // Server coins replace the local placeholder once a profile is loaded; offline it stays as before.
-    const stopCoins = onProfile(profile => { coins.setText((profile?.coins ?? player.coins).toLocaleString(preferences.language)); gems.setText((profile?.diamonds ?? 0).toLocaleString(preferences.language)); resize() })
-    if (getProfile()) coins.setText(getProfile()!.coins.toLocaleString(preferences.language)); resize()
+    const stopCoins = onProfile(profile => { coins.setText(sessionCoins().toLocaleString(preferences.language)); nameLabel.setText(playerName()); gems.setText((profile?.diamonds ?? 0).toLocaleString(preferences.language)); resize() })
+    resize()
     brand.setAlpha(0); this.tweens.add({ targets: brand, alpha: 1, duration: 500 })
     this.scale.on(Phaser.Scale.Events.RESIZE, resize)
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Enter' && !e.repeat) { audio.unlock(); navigate(this, 'Arena') } }

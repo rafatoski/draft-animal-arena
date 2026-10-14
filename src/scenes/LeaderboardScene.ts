@@ -1,5 +1,5 @@
 import Phaser from 'phaser'
-import { background, heading, text, button, entrance, navigate, PALETTE } from '../ui/components'
+import { background, heading, text, button, iconButton, entrance, navigate, PALETTE } from '../ui/components'
 import { t } from '../services/i18n'
 import { supabaseConfigured } from '../services/supabase'
 import { fetchLeaderboard, getProfile, refreshProfile } from '../services/online'
@@ -11,27 +11,31 @@ export class LeaderboardScene extends Phaser.Scene {
   private rows!: Phaser.GameObjects.Container
   private page = 0
   private token = 0
+  private prev!: ReturnType<typeof iconButton>
+  private next!: ReturnType<typeof iconButton>
   constructor() { super('Leaderboard') }
   create() {
     this.input.enabled = true; this.page = 0
     background(this); entrance(this); heading(this, t('leaderboard'), t('lbHead'))
     this.rows = this.add.container(0, 0)
-    button(this, 100, 712, t('lbPrev'), () => this.go(-1), { width: 150, size: 15 })
-    button(this, 240, 712, t('lbRefresh'), () => this.fetchPage(), { width: 150, size: 15, color: PALETTE.yellow })
-    button(this, 380, 712, t('lbNext'), () => this.go(1), { width: 150, size: 15 })
+    this.prev = iconButton(this, 100, 712, 'prev', t('lbPrev'), () => this.go(-1), { width: 150 })
+    iconButton(this, 240, 712, 'refresh', t('lbRefresh'), () => this.fetchPage(), { width: 150, color: PALETTE.yellow })
+    this.next = iconButton(this, 380, 712, 'next', t('lbNext'), () => this.go(1), { width: 150 })
+    this.prev.setEnabled(false); this.next.setEnabled(false)
     button(this, 240, 780, `‹  ${t('back')}`, () => navigate(this, 'Menu'), { color: PALETTE.cream, width: 280 })
     void refreshProfile().finally(() => this.fetchPage())
   }
   private go(step: number) { this.page = Math.max(0, this.page + step); this.fetchPage() }
   private async fetchPage(): Promise<void> {
     const mine = ++this.token
-    this.show([], t('lbLoading'))
+    this.show([], t('lbLoading')); this.prev.setEnabled(false); this.next.setEnabled(false)
     if (!supabaseConfigured) return this.show([], t('onlineOff'))
     const { rows, error } = await fetchLeaderboard(this.page * PAGE, PAGE)
     if (mine !== this.token || !this.sys.isActive()) return
-    if (error) return this.show([], t('lbError'))
+    if (error) { this.prev.setEnabled(this.page > 0); return this.show([], t('lbError')) }
     if (!rows.length && this.page > 0) { this.page--; return this.fetchPage() }
     this.show(rows, rows.length ? '' : t('lbEmpty'))
+    this.prev.setEnabled(this.page > 0); this.next.setEnabled(rows.length === PAGE) // a full page may have a successor
   }
   private show(rows: LeaderEntry[], note: string) {
     this.rows.removeAll(true)

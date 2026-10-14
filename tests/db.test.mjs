@@ -8,6 +8,7 @@ import { runOnlineMatch } from '../.test-build/game/onlineSim.js'
 // This exercises our SQL, RLS and functions; it is not a substitute for a smoke test on the hosted project.
 const db = new PGlite()
 const A = '00000000-0000-4000-8000-00000000000a', B = '00000000-0000-4000-8000-00000000000b', C = '00000000-0000-4000-8000-00000000000c'
+const Z = '00000000-0000-4000-8000-0000000000aa' // an anonymous (guest-type) auth user: must never reach rooms or persistent rewards
 const asUser = async (id, role = 'authenticated') => { await db.exec(`reset role; select set_config('request.jwt.claim.sub', '${id ?? ''}', false); set role ${role}`) }
 const asService = () => db.exec('reset role; set role service_role')
 const q = async (sql, params) => (await db.query(sql, params)).rows
@@ -25,27 +26,27 @@ before(async () => {
     alter default privileges in schema public grant all on tables to anon, authenticated, service_role;
     alter default privileges in schema public grant execute on functions to public;`)
   for (const file of readdirSync('supabase/migrations').sort()) await db.exec(readFileSync(`supabase/migrations/${file}`, 'utf8'))
-  await db.exec(`insert into auth.users (id, is_anonymous) values ('${A}', true), ('${B}', true);
+  await db.exec(`insert into auth.users (id, is_anonymous) values ('${A}', false), ('${B}', false), ('${Z}', true);
     insert into auth.users (id, is_anonymous, raw_user_meta_data) values ('${C}', false, '{"full_name":"Casey Google","avatar_url":"https://x/y.png"}')`)
   await unlockAll(A); await unlockAll(B) // these players stand in for people who already own every fighter
 })
 
-test('every auth user gets one profile and one progress row; Google keeps its name', async () => {
+test('every auth user gets one profile and one progress row; Google keeps its name, with a safe fallback', async () => {
   await db.exec('reset role')
-  const profiles = await q('select id, display_name, account_type from public.profiles order by id')
-  assert.equal(profiles.length, 3)
-  assert.match(profiles[0].display_name, /^Guest \d{4}$/); assert.equal(profiles[0].account_type, 'guest')
-  assert.deepEqual([profiles[2].display_name, profiles[2].account_type], ['Casey Google', 'google'])
-  assert.equal((await q('select count(*)::int n from public.player_progress'))[0].n, 3)
+  const profiles = Object.fromEntries((await q('select id, display_name, account_type from public.profiles')).map(r => [r.id, r]))
+  assert.equal(Object.keys(profiles).length, 4) // one per auth user: no duplicates
+  assert.deepEqual([profiles[C].display_name, profiles[C].account_type], ['Casey Google', 'google'])
+  assert.match(profiles[A].display_name, /^Player \d{4}$/); assert.equal(profiles[A].account_type, 'google') // Google without a name: safe fallback
+  assert.match(profiles[Z].display_name, /^Guest \d{4}$/); assert.equal(profiles[Z].account_type, 'guest')
+  assert.equal((await q('select count(*)::int n from public.player_progress'))[0].n, 4)
   assert.equal((await q('select coins from public.player_progress where player_id = $1', [A]))[0].coins, 0)
 })
 
-test('a guest upgraded to Google keeps the same id and progress', async () => {
-  await db.exec(`reset role; update public.player_progress set coins = 77 where player_id = '${B}';
-    update auth.users set is_anonymous = false, raw_user_meta_data = '{"name":"Bea"}' where id = '${B}'`)
-  const row = (await q(`select p.display_name, p.account_type, g.coins from public.profiles p join public.player_progress g on g.player_id = p.id where p.id = '${B}'`))[0]
-  assert.deepEqual([row.display_name, row.account_type, row.coins], ['Bea', 'google', 77])
-  await db.exec(`update public.player_progress set coins = 0 where player_id = '${B}'`)
+test('anonymous / guest-type users cannot open or join rooms, so they can never reach ranked play or online rewards', async () => {
+  await asUser(A); const open = (await q('select * from public.create_room()'))[0]
+  await asUser(Z); await fails('select * from public.create_room()', /sign in with Google/)
+  await asUser(Z); await fails(`select * from public.join_room('${open.room_code}')`, /sign in with Google/)
+  await db.exec(`reset role; delete from public.multiplayer_rooms where id = '${open.id}'`) // our own test room, not player data
 })
 
 test('players edit only their own name and avatar, and never their progression', async () => {
@@ -65,9 +66,10 @@ test('players edit only their own name and avatar, and never their progression',
 let room
 test('rooms: create, join by code, capacity of two, no self-join', async () => {
   await asUser(A); room = (await q('select * from public.create_room()'))[0]
-  assert.match(room.room_code, /^[A-HJ-NP-Z2-9]{5}$/); assert.equal(room.status, 'waiting'); assert.equal(room.host_player_id, A)
+  assert.match(room.room_code, /^[A-HJ-NP-Z2-9]{6}$/); assert.equal(room.status, 'waiting'); assert.equal(room.host_player_id, A)
   await asUser(A); await fails(`select * from public.join_room('${room.room_code}')`, /host of this room/)
-  await asUser(B); const joined = (await q(`select * from public.join_room('${room.room_code.toLowerCase()}')`))[0]
+  const typed = ` ${room.room_code.slice(0, 3).toLowerCase()}-${room.room_code.slice(3).toLowerCase()} ` // people type codes in any case, with spaces or dashes
+  await asUser(B); const joined = (await q(`select * from public.join_room('${typed}')`))[0]
   assert.deepEqual([joined.status, joined.guest_player_id], ['lobby', B])
   await asUser(B); assert.equal((await q(`select * from public.join_room('${room.room_code}')`))[0].guest_player_id, B) // idempotent
   await asUser(C); await fails(`select * from public.join_room('${room.room_code}')`, /room is full/)
@@ -154,9 +156,13 @@ test('leaderboard is public, ranked, and only lists players who have played', as
   await fails('select * from public.player_progress', /permission denied/)
 })
 
-test('rematch returns to the lobby with ready flags cleared; leaving frees the room', async () => {
-  await asUser(A); await db.query(`select public.rematch_room('${room.id}')`)
-  assert.deepEqual([(await q(`select status from public.multiplayer_rooms where id = '${room.id}'`))[0].status, (await q('select bool_or(ready) r from public.room_players'))[0].r], ['lobby', false])
+test('rematch needs both players; leaving frees the room', async () => {
+  await asUser(A); assert.equal((await q(`select public.rematch_room('${room.id}') r`))[0].r, false) // one vote is not enough
+  assert.equal((await q(`select status from public.multiplayer_rooms where id = '${room.id}'`))[0].status, 'finished')
+  await asUser(A); assert.equal((await q(`select public.rematch_room('${room.id}') r`))[0].r, false) // voting twice does not count twice
+  await asUser(B); assert.equal((await q(`select public.rematch_room('${room.id}') r`))[0].r, true)
+  assert.deepEqual([(await q(`select status from public.multiplayer_rooms where id = '${room.id}'`))[0].status, (await q('select bool_or(ready) or bool_or(rematch) r from public.room_players'))[0].r], ['lobby', false])
+  await asUser(C); await fails(`select public.rematch_room('${room.id}')`, /not in this room/)
   await asUser(B); await db.query(`select public.leave_room('${room.id}')`)
   await asUser(A); const left = (await q(`select status, guest_player_id from public.multiplayer_rooms where id = '${room.id}'`))[0]
   assert.deepEqual([left.status, left.guest_player_id], ['waiting', null])
@@ -174,7 +180,7 @@ test('stale-room and old-event cleanup is service-only', async () => {
 
 test('end to end: two players, server simulation, both clients replay the same result, one payout', async () => {
   const D = '00000000-0000-4000-8000-0000000000d1', E = '00000000-0000-4000-8000-0000000000e1'
-  await db.exec(`reset role; insert into auth.users (id, is_anonymous) values ('${D}', true), ('${E}', true)`); await unlockAll(D); await unlockAll(E)
+  await db.exec(`reset role; insert into auth.users (id, is_anonymous) values ('${D}', false), ('${E}', false)`); await unlockAll(D); await unlockAll(E)
   await asUser(D); const r = (await q('select * from public.create_room()'))[0]
   await asUser(E); await db.query(`select * from public.join_room('${r.room_code}')`)
   await asUser(D); await db.query(`select public.set_team('${r.id}', '{raccoon,pig,frog}')`); await db.query(`select public.set_ready('${r.id}', true)`)
@@ -220,7 +226,7 @@ test('economy: starters are unlocked, the other three are locked, and nobody can
 
 test('economy: locked fighters cannot be used in a room team, and diamonds buy them atomically', async () => {
   const F = '00000000-0000-4000-8000-0000000000f1', G = '00000000-0000-4000-8000-0000000000f2'
-  await db.exec(`reset role; insert into auth.users (id, is_anonymous) values ('${F}', true), ('${G}', true)`)
+  await db.exec(`reset role; insert into auth.users (id, is_anonymous) values ('${F}', false), ('${G}', false)`)
   await asUser(F); const r = (await q('select * from public.create_room()'))[0]
   await asUser(G); await db.query(`select * from public.join_room('${r.room_code}')`)
   await asUser(F); await fails(`select public.set_team('${r.id}', '{chicken,capybara,pig}')`, /fighter not unlocked/)
@@ -243,10 +249,89 @@ test('economy: locked fighters cannot be used in a room team, and diamonds buy t
 
 test('economy: a team with a fighter that is no longer owned cannot start a match', async () => {
   const H = '00000000-0000-4000-8000-0000000000a1', I = '00000000-0000-4000-8000-0000000000a2'
-  await db.exec(`reset role; insert into auth.users (id, is_anonymous) values ('${H}', true), ('${I}', true); update public.player_progress set diamonds = 10 where player_id = '${H}'`)
+  await db.exec(`reset role; insert into auth.users (id, is_anonymous) values ('${H}', false), ('${I}', false); update public.player_progress set diamonds = 10 where player_id = '${H}'`)
   await asUser(H); const r = (await q('select * from public.create_room()'))[0]; await db.query(`select public.unlock_fighter('fox')`)
   await asUser(I); await db.query(`select * from public.join_room('${r.room_code}')`); await db.query(`select public.set_team('${r.id}', '{chicken,capybara,frog}')`); await db.query(`select public.set_ready('${r.id}', true)`)
   await asUser(H); await db.query(`select public.set_team('${r.id}', '{chicken,capybara,fox}')`); await db.query(`select public.set_ready('${r.id}', true)`)
   await db.exec(`reset role; delete from public.player_fighters where player_id = '${H}' and fighter_id = 'fox'`) // e.g. a refund / revoke after picking
   await asService(); await fails(`select * from public.begin_match('${r.id}', '${H}')`, /fighter not unlocked/)
+})
+
+const practice = (player, request, team, won) => q('select * from public.record_practice_match($1, $2, $3::text[], $4::text[], $5, $6)', [player, request, team, ['robot1', 'robot2', 'robot3'], 123456, won])
+const progress = async (id) => (await q('select coins, diamonds, ranking_points, wins, losses, total_matches from public.player_progress where player_id = $1', [id]))[0]
+const rewind = () => db.exec(`reset role; update public.practice_matches set created_at = created_at - interval '1 minute'`)
+const T = ['chicken', 'capybara', 'frog']
+let nextRequest = 0
+const req = () => `10000000-0000-4000-8000-${String(++nextRequest).padStart(12, '0')}`
+
+test('practice rewards: a win pays 1-3 coins and never diamonds, ranking or online stats; a loss pays nothing', async () => {
+  await asService(); const before = await progress(A)
+  const won = (await practice(A, req(), T, true))[0]
+  assert.ok(won.coins >= 1 && won.coins <= 3 && !won.limited)
+  const after = await progress(A)
+  assert.equal(after.coins - before.coins, won.coins)
+  assert.deepEqual([after.diamonds, after.ranking_points, after.wins, after.losses, after.total_matches], [before.diamonds, before.ranking_points, before.wins, before.losses, before.total_matches])
+  await rewind()
+  const lost = (await practice(A, req(), T, false))[0]
+  assert.equal(lost.coins, 0); assert.deepEqual(await progress(A), after)
+  assert.deepEqual((await q(`select currency, transaction_type, amount from public.economy_transactions where player_id = '${A}' and transaction_type = 'practice_reward'`)).map(r => [r.currency, r.amount]), [['coins', won.coins]])
+})
+
+test('practice rewards: the amount is always within 1-3 and varies', async () => {
+  await asService(); const seen = new Set()
+  for (let i = 0; i < 40; i++) { await rewind(); seen.add((await practice(B, req(), T, true))[0].coins) }
+  assert.ok([...seen].every(c => c >= 1 && c <= 3)); assert.ok(seen.size >= 2)
+  assert.equal((await progress(B)).diamonds, 0)
+})
+
+test('practice rewards: a retried request id never pays twice; rapid new requests and the hourly cap are limited', async () => {
+  await asService(); await rewind()
+  const id = req(), first = (await practice(C, id, T, true))[0], before = await progress(C)
+  const retry = (await practice(C, id, T, true))[0]
+  assert.equal(retry.id, first.id); assert.deepEqual(await progress(C), before)
+  const rapid = (await practice(C, req(), T, true))[0] // a different request seconds later
+  assert.deepEqual([rapid.coins, rapid.limited], [0, true]); assert.deepEqual(await progress(C), before)
+  await rewind(); await db.exec(`update public.economy_config set config = jsonb_set(config, '{practice_limits,per_hour}', '1')`)
+  assert.equal((await practice(C, req(), T, true))[0].limited, true) // hourly cap reached
+  await db.exec(`update public.economy_config set config = jsonb_set(config, '{practice_limits,per_hour}', '60')`)
+})
+
+test('practice rewards: guests, locked fighters and the public API are rejected', async () => {
+  await asService()
+  await fails(`select * from public.record_practice_match('${Z}', gen_random_uuid(), '{chicken,capybara,frog}', '{robot1,robot2,robot3}', 1, true)`, /sign in with Google/)
+  await fails(`select * from public.record_practice_match('${C}', gen_random_uuid(), '{chicken,capybara,pig}', '{robot1,robot2,robot3}', 1, true)`, /invalid team/)
+  await fails(`select * from public.record_practice_match('${C}', gen_random_uuid(), '{chicken,chicken,frog}', '{robot1,robot2,robot3}', 1, true)`, /invalid team/)
+  await asUser(C); await fails(`select * from public.record_practice_match('${C}', gen_random_uuid(), '{chicken,capybara,frog}', '{robot1,robot2,robot3}', 1, true)`, /permission denied/)
+  await fails(`insert into public.practice_matches (player_id, request_id, team, robot_team, combat_seed, player_won, coins) values ('${C}', gen_random_uuid(), '{a}', '{b}', 1, true, 3)`, /permission denied/)
+  await fails(`update public.player_progress set coins = coins + 3 where player_id = '${C}'`, /permission denied/)
+  assert.ok((await q('select * from public.practice_matches')).every(r => r.player_id === C)) // own rows only
+  await asUser(null, 'anon'); await fails('select * from public.practice_matches', /permission denied/)
+})
+
+test('quick match: two distinct players are paired once, nobody matches themselves, cancel and stale entries clean up', async () => {
+  const [Q1, Q2, Q3, Q4] = [1, 2, 3, 4].map(n => `20000000-0000-4000-8000-00000000000${n}`)
+  await db.exec(`reset role; insert into auth.users (id, is_anonymous) values ${[Q1, Q2, Q3, Q4].map(id => `('${id}', false)`).join(', ')}`)
+  await asUser(Z); await fails('select public.quick_match()', /sign in with Google/)
+  await asUser(null, 'anon'); await fails('select public.quick_match()', /permission denied/)
+  await asUser(Q1); assert.equal((await q('select public.quick_match() r'))[0].r.state, 'searching')
+  await asUser(Q1); assert.equal((await q('select public.quick_match() r'))[0].r.state, 'searching') // polling again: still alone, never self-matched
+  await asService(); assert.equal((await q('select count(*)::int n from public.matchmaking_queue'))[0].n, 1)
+  await asUser(Q2); const second = (await q('select public.quick_match() r'))[0].r
+  assert.equal(second.state, 'matched'); assert.deepEqual([second.room.host_player_id, second.room.guest_player_id, second.room.status, second.room.quick], [Q1, Q2, 'lobby', true])
+  await asUser(Q1); const first = (await q('select public.quick_match() r'))[0].r // the waiting player's next poll learns of the room
+  assert.equal(first.state, 'matched'); assert.equal(first.room.id, second.room.id)
+  await asService(); assert.equal((await q('select count(*)::int n from public.matchmaking_queue'))[0].n, 0)
+  assert.equal((await q('select count(*)::int n from public.room_players where room_id = $1', [second.room.id]))[0].n, 2)
+  assert.equal((await q('select count(*)::int n from public.multiplayer_rooms where quick'))[0].n, 1) // exactly one room for the pair
+  await asUser(Q2); assert.equal((await q('select (public.my_active_room()).id i'))[0].i, second.room.id)
+
+  await asUser(Q3); assert.equal((await q('select public.quick_match() r'))[0].r.state, 'searching')
+  await db.query('select public.cancel_quick_match()')
+  await asService(); assert.equal((await q('select count(*)::int n from public.matchmaking_queue'))[0].n, 0) // cancel leaves the line
+  await asUser(Q3); await db.query('select public.quick_match()')
+  await asService(); await db.query(`update public.matchmaking_queue set seen_at = now() - interval '1 minute'`) // Q3 closed the tab
+  await asUser(Q4); assert.equal((await q('select public.quick_match() r'))[0].r.state, 'searching') // does not get paired with a ghost
+  await asService(); assert.deepEqual((await q('select player_id from public.matchmaking_queue')).map(r => r.player_id), [Q4])
+  await asUser(Q4); await db.query('select public.cancel_quick_match()')
+  await asService(); await fails('select public.quick_match()', /permission denied/) // players only, never the service role
 })

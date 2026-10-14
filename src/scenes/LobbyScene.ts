@@ -1,12 +1,11 @@
 import Phaser from 'phaser'
 import { background, heading, text, button, panel, entrance, navigate, PALETTE } from '../ui/components'
 import { t } from '../services/i18n'
-import { supabaseConfigured } from '../services/supabase'
 import { FIGHTERS } from '../game/fighters'
 import { miniFighterCard } from '../ui/miniFighterCard'
 import { preloadCardArt } from '../ui/collectibleCard'
 import { audio } from '../services/audio'
-import { isUnlocked, createRoom, joinRoom, leaveRoom, setTeam, setReady, rematchRoom, fetchRoomState, fetchMatch, startMatch, watchRoom, getProfile, refreshProfile } from '../services/online'
+import { isUnlocked, leaveRoom, setTeam, setReady, fetchRoomState, fetchMatch, startMatch, watchRoom, getProfile } from '../services/online'
 import type { RoomState } from '../services/online'
 import type { OnlineLaunch } from './ArenaScene'
 
@@ -30,47 +29,13 @@ export class LobbyScene extends Phaser.Scene {
     background(this); entrance(this); heading(this, t('lobbyTitle'), t('lobbyHint'))
     this.view = this.add.container(0, 0)
     this.events.once('shutdown', () => { this.stop?.(); this.stop = undefined })
-    if (this.roomId) void this.enter(this.roomId); else void this.start()
-    this.renderHome()
+    if (this.roomId) void this.enter(this.roomId); else this.scene.start('Online') // rooms are created / joined from the Online screen
   }
-  private async start() {
-    await refreshProfile(); this.renderHome()
-  }
-
-  // ───────── no room yet ─────────
-  private renderHome() {
-    if (this.roomId && this.state) return
-    this.view.removeAll(true); this.cards = []
-    const add = (...o: Phaser.GameObjects.GameObject[]) => this.view.add(o)
-    if (!supabaseConfigured || !getProfile()) {
-      add(text(this, 240, 300, supabaseConfigured ? t('needsLogin') : t('onlineOff'), 18, '#fff4d9').setWordWrapWidth(380).setLineSpacing(8))
-      if (supabaseConfigured) add(button(this, 240, 400, t('accountTitle'), () => navigate(this, 'Account'), { color: PALETTE.yellow }))
-    } else {
-      add(button(this, 240, 300, t('createRoom'), () => void this.create_(), { color: PALETTE.yellow }),
-        button(this, 240, 380, t('joinRoom'), () => void this.join(), { color: PALETTE.mint }))
-    }
-    if (this.note) add(text(this, 240, 480, this.note, 15, '#ffb9a8').setWordWrapWidth(400))
-    add(button(this, 240, 750, `‹  ${t('back')}`, () => navigate(this, 'Account'), { color: PALETTE.cream }))
-  }
-  private async create_() {
-    const result = await createRoom()
-    if (!result.ok) { this.note = t('errGeneric'); return this.renderHome() }
-    void this.enter(result.value.id)
-  }
-  private async join() {
-    const code = window.prompt(t('enterCode'))?.trim()
-    if (!code) return
-    const result = await joinRoom(code)
-    if (!result.ok) { this.note = t('roomGone'); return this.renderHome() }
-    void this.enter(result.value.id)
-  }
-
   // ───────── inside a room ─────────
   private async enter(roomId: string) {
     this.roomId = roomId
-    let state = await fetchRoomState(roomId)
-    if (state?.room.status === 'finished') { await rematchRoom(roomId); state = await fetchRoomState(roomId) }
-    if (!state || state.room.status === 'closed') { this.roomId = undefined; this.note = t('roomGone'); return this.renderHome() }
+    const state = await fetchRoomState(roomId)
+        if (!state || state.room.status === 'closed' || state.room.status === 'finished') { this.roomId = undefined; return navigate(this, 'Online') }
     const me = getProfile()?.id ?? ''
     this.stop?.()
     this.stop = watchRoom(roomId, me, () => void this.sync(), online => { this.online = online; this.draw() })
@@ -80,7 +45,7 @@ export class LobbyScene extends Phaser.Scene {
     if (!this.roomId || !this.sys.isActive()) return
     const state = await fetchRoomState(this.roomId)
     if (!state) return
-    if (state.room.status === 'closed') { this.stop?.(); this.stop = undefined; this.state = null; this.roomId = undefined; this.note = t('roomGone'); return this.renderHome() }
+    if (state.room.status === 'closed') { this.stop?.(); this.stop = undefined; this.state = null; this.roomId = undefined; return navigate(this, 'Online') }
     this.state = state; this.react(); this.draw()
   }
   /** Both players run this on every change; start-match is idempotent so only one match is ever created. */
@@ -100,6 +65,7 @@ export class LobbyScene extends Phaser.Scene {
     const name = (id: string) => state.seats.find(s => s.playerId === id)?.name ?? '…'
     const launch: OnlineLaunch = { matchId: match.id, roomId: state.room.id, viewer: me === match.player1 ? 'player' : 'ai', names: { player: name(match.player1), ai: name(match.player2) } }
     this.stop?.(); this.stop = undefined
+    for (const n of [3, 2, 1]) { this.statusText?.setText(t('startingIn', { n })).setColor('#ffd367'); await new Promise(r => setTimeout(r, 900)); if (!this.sys.isActive()) return }
     navigate(this, 'Arena', { match: { player: match.team1, ai: match.team2, seed: match.matchSeed, combatSeed: match.combatSeed }, online: launch })
   }
 
@@ -112,7 +78,12 @@ export class LobbyScene extends Phaser.Scene {
     const add = (...o: Phaser.GameObjects.GameObject[]) => this.view.add(o)
     add(panel(this, 240, 175, 330, 92, 0x4a2c8a), text(this, 240, 148, t('roomCode'), 12, '#d9ccff'),
       text(this, 240, 186, state.room.code, 46, '#ffd367').setStroke('#173f46', 6))
-    add(button(this, 410, 175, t('copyCode'), () => { void navigator.clipboard?.writeText(state.room.code); audio.effect('tap') }, { width: 100, size: 14 }))
+    const copy = button(this, 410, 150, t('copyCode'), () => {
+      void navigator.clipboard?.writeText(state.room.code); const label = copy.list[1] as Phaser.GameObjects.Text
+      label.setText(t('copied')); this.time.delayedCall(1400, () => label.active && label.setText(t('copyCode')))
+    }, { width: 100, size: 14 })
+    add(copy)
+    if (typeof navigator.share === 'function') add(button(this, 410, 208, t('shareCode'), () => void navigator.share({ title: 'Draft Animal Arena', text: `${t('roomCode')}: ${state.room.code}` }).catch(() => {}), { width: 100, size: 14, color: PALETTE.yellow }))
     for (let i = 0; i < 2; i++) {
       add(panel(this, 240, 268 + i * 58, 420, 50, 0x3a2270))
       this.seatTexts.push(text(this, 52, 268 + i * 58, '', 18, '#fff4d9').setOrigin(0, .5), text(this, 428, 268 + i * 58, '', 14, '#d9ccff').setOrigin(1, .5))
@@ -141,7 +112,7 @@ export class LobbyScene extends Phaser.Scene {
       if (!id || !seat) { label.setText(t('waitingOpp')); tag.setText(''); return }
       label.setText(seat.playerId === me ? `${seat.name}  (${t('youTag')})` : seat.name); label.setScale(1)
       if (label.width > 270) label.setScale(270 / label.width)
-      tag.setText(`${this.online.has(id) ? t('oppOnline') : t('oppOffline')}  ${seat.ready ? '✓' : ''}`)
+      tag.setText(`${this.online.has(id) ? t('oppOnline') : t('oppOffline')}  •  ${seat.ready ? t('readyBtn') : t('notReadyBtn')}`)
     })
     const mine = state.seats.find(s => s.playerId === me)
     const picked = mine && mine.team.length === 3 ? mine.team : this.picked
@@ -174,6 +145,6 @@ export class LobbyScene extends Phaser.Scene {
     const id = this.roomId; this.stop?.(); this.stop = undefined
     if (id) await leaveRoom(id)
     this.roomId = undefined; this.state = null; this.note = ''
-    navigate(this, 'Account')
+    navigate(this, 'Online')
   }
 }

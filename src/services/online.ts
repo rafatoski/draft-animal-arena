@@ -1,6 +1,6 @@
 import type { RealtimeChannel } from '@supabase/supabase-js'
 import { supabase } from './supabase'
-import { currentSession, onAuthChange } from './auth'
+import { realSession, onAuthChange } from './auth'
 import { ECONOMY } from '../game/economy'
 
 // ───────── profile + progression (read-only for the browser; the server pays out) ─────────
@@ -18,7 +18,7 @@ export function onProfile(listener: (p: OnlineProfile | null) => void) { profile
 export async function refreshProfile(): Promise<OnlineProfile | null> {
   if (!supabase) return null
   try {
-    const session = await currentSession()
+    const session = await realSession()
     if (!session) { setProfile(null); return null }
     const [p, g, f] = await Promise.all([
       supabase.from('profiles').select('id, display_name, account_type').eq('id', session.user.id).single(),
@@ -37,7 +37,7 @@ export async function refreshProfile(): Promise<OnlineProfile | null> {
 export function startOnlineProfile() {
   if (!supabase) return
   void refreshProfile()
-  onAuthChange(user => { if (user) void refreshProfile(); else setProfile(null) })
+  onAuthChange(user => { if (user && !user.is_anonymous) void refreshProfile(); else setProfile(null) })
 }
 
 /**
@@ -87,7 +87,7 @@ export async function fetchLeaderboard(offset: number, limit: number): Promise<{
 // ───────── rooms ─────────
 export type RoomStatus = 'waiting' | 'lobby' | 'in_match' | 'finished' | 'closed'
 export interface Room { id: string; code: string; hostId: string; guestId: string | null; status: RoomStatus; matchId: string | null }
-export interface Seat { playerId: string; name: string; team: string[]; ready: boolean }
+export interface Seat { playerId: string; name: string; team: string[]; ready: boolean; rematch: boolean }
 export interface RoomState { room: Room; seats: Seat[] }
 
 const toRoom = (r: { id: string; room_code: string; host_player_id: string; guest_player_id: string | null; status: RoomStatus; current_match_id: string | null }): Room =>
@@ -105,18 +105,35 @@ export const joinRoom = (code: string) => rpc('join_room', { p_code: code }, d =
 export const leaveRoom = (roomId: string) => rpc('leave_room', { p_room: roomId }, () => undefined)
 export const setTeam = (roomId: string, team: string[]) => rpc('set_team', { p_room: roomId, p_team: team }, () => undefined)
 export const setReady = (roomId: string, ready: boolean) => rpc('set_ready', { p_room: roomId, p_ready: ready }, () => undefined)
-export const rematchRoom = (roomId: string) => rpc('rematch_room', { p_room: roomId }, () => undefined)
+/** Casts this player's rematch vote. true = both agreed and the room is back in the lobby. */
+export const rematchRoom = (roomId: string) => rpc('rematch_room', { p_room: roomId }, d => d === true)
+
+export type QuickMatchState = { state: 'searching' } | { state: 'matched'; room: Room }
+/** One poll of the matchmaking queue (call every couple of seconds while searching). The server pairs two distinct players atomically. */
+export const quickMatch = () => rpc<QuickMatchState>('quick_match', {}, d => {
+  const r = d as { state: string; room: Parameters<typeof toRoom>[0] }
+  return r.state === 'matched' ? { state: 'matched', room: toRoom(r.room) } : { state: 'searching' }
+})
+export const cancelQuickMatch = () => rpc('cancel_quick_match', {}, () => undefined)
+/** The caller's unfinished room (so a refresh or reconnect can go back into it), or null. */
+export async function myActiveRoom(): Promise<Room | null> {
+  if (!supabase || !profile) return null
+  try {
+    const { data, error } = await supabase.rpc('my_active_room')
+    return error || !data?.id ? null : toRoom(data)
+  } catch { return null }
+}
 
 export async function fetchRoomState(roomId: string): Promise<RoomState | null> {
   if (!supabase) return null
   try {
     const room = await supabase.from('multiplayer_rooms').select('*').eq('id', roomId).single()
     if (room.error) return null
-    const seats = await supabase.from('room_players').select('player_id, team_selection, ready').eq('room_id', roomId)
+    const seats = await supabase.from('room_players').select('player_id, team_selection, ready, rematch').eq('room_id', roomId)
     const ids = [room.data.host_player_id, room.data.guest_player_id].filter(Boolean) as string[]
     const names = await supabase.from('profiles').select('id, display_name').in('id', ids)
     const nameOf = (id: string) => names.data?.find(n => n.id === id)?.display_name ?? '…'
-    return { room: toRoom(room.data), seats: (seats.data ?? []).map(s => ({ playerId: s.player_id, name: nameOf(s.player_id), team: s.team_selection, ready: s.ready })) }
+    return { room: toRoom(room.data), seats: (seats.data ?? []).map(s => ({ playerId: s.player_id, name: nameOf(s.player_id), team: s.team_selection, ready: s.ready, rematch: s.rematch })) }
   } catch { return null }
 }
 
@@ -161,4 +178,27 @@ export function watchRoom(roomId: string, myId: string, onChange: () => void, on
     .on('presence', { event: 'sync' }, () => onPresence(new Set(Object.keys(channel.presenceState()))))
     .subscribe(status => { if (status === 'SUBSCRIBED') void channel.track({ at: Date.now() }) })
   return () => { void supabase!.removeChannel(channel) }
+}
+
+// ───────── rewards (always read back from the server; nothing here is computed on the client) ─────────
+export interface Reward { coins: number; diamonds: number }
+/** The payout the server recorded for this player and online match, or null when it cannot be read. */
+export async function fetchReward(matchId: string): Promise<Reward | null> {
+  const id = getProfile()?.id
+  if (!supabase || !id) return null
+  try {
+    const { data, error } = await supabase.from('reward_ledger').select('coins, diamonds').eq('match_id', matchId).eq('player_id', id).maybeSingle()
+    return error || !data ? null : { coins: data.coins, diamonds: data.diamonds }
+  } catch { return null }
+}
+
+export interface PracticeLaunch { matchId: string; team: string[]; robots: string[]; combatSeed: number; playerWon: boolean; coins: number; limited: boolean }
+/** Asks the server to run a practice match: it picks the seed, simulates it and records the reward. null = could not be verified. */
+export async function practiceMatch(team: readonly string[]): Promise<PracticeLaunch | null> {
+  if (!supabase || !profile) return null
+  try {
+    const { data, error } = await supabase.functions.invoke('practice-match', { body: { team, request_id: crypto.randomUUID() } })
+    if (error || !data?.match_id) return null
+    return { matchId: data.match_id, team: data.team, robots: data.robot_team, combatSeed: data.combat_seed, playerWon: data.player_won, coins: data.coins, limited: data.limited }
+  } catch { return null }
 }

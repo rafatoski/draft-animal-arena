@@ -418,6 +418,10 @@ s3_secret_key = "env(S3_SECRET_KEY)"
 verify_jwt = true
 entrypoint = "./functions/start-match/index.ts"
 
+[functions.practice-match]
+verify_jwt = true
+entrypoint = "./functions/practice-match/index.ts"
+
 # Called by a scheduler with a shared secret header, not by browsers.
 [functions.sheets-sync]
 verify_jwt = false

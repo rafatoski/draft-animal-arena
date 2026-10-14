@@ -1,7 +1,8 @@
 import Phaser from 'phaser'
 import { exitControl } from '../ui/exitControl'
 import { preloadColosseum, preloadHeart, HEART_TEXTURE } from '../game/assets'
-import { loadPlayer } from '../services/player'
+import { getGuest, guestPracticeWin } from '../services/guest'
+import type { RewardInfo } from '../game/economy'
 import { createColosseum } from '../rendering/colosseum'
 import { sourceToWorld } from '../rendering/battlefield'
 import { DPR } from '../rendering/pixelRatio'
@@ -14,7 +15,7 @@ import { spriteKit, preloadFighterSprites } from '../game/fighterSprites'
 import type { SpriteKit } from '../game/spriteKit'
 import { CombatSimulation } from '../simulation/combat'
 import type { CombatEvent, Team, Unit, Winner } from '../simulation/combat'
-import { getProfile, ownedFighters, refreshProfile, waitForResult } from '../services/online'
+import { fetchReward, getProfile, ownedFighters, practiceMatch, refreshProfile, waitForResult } from '../services/online'
 import { draftMatch, newSeed } from '../game/match'
 import { newSeries, recordRound, roundSeed, isFinalRound, WINS_NEEDED } from '../game/series'
 import type { Series } from '../game/series'
@@ -69,12 +70,14 @@ export class ArenaScene extends Phaser.Scene {
   private online?: OnlineLaunch
   /** Whose team is shown at the bottom, in friendly colours and on the left of the scoreboard. */
   private viewer: Team = 'player'
-  private coinsBefore = 0
+  /** Practice reward verified by the server before the replay starts; shown on the results screen only after the fight. */
+  private practiceReward?: RewardInfo
+  private serverPracticeWin?: boolean
 
   constructor() { super('Arena') }
   init(data: { match?: MatchSetup; practice?: boolean; online?: OnlineLaunch } = {}) {
     this.practice = !!(data.practice || data.match?.practice); this.online = data.online; this.viewer = data.online?.viewer ?? 'player'
-    this.coinsBefore = getProfile()?.coins ?? 0
+    this.practiceReward = undefined; this.serverPracticeWin = undefined
   }
   /** The world is mirrored top-to-bottom for the 'ai' viewer so their own team is always at the bottom. */
   private vy(y: number) { return this.viewer === 'player' ? y : 870 - y }
@@ -120,7 +123,7 @@ export class ArenaScene extends Phaser.Scene {
     if (data.match) {
       this.match = data.match; this.seed = data.match.seed
       this.selection = [...data.match.player]
-      this.beginBattle()
+      if (this.practice && getProfile()) void this.startVerifiedPractice(); else this.beginBattle() // a rematch is a new server-verified match too
     } else this.startDraft()
     this.resizeArena()
   }
@@ -208,6 +211,18 @@ export class ArenaScene extends Phaser.Scene {
   private lockDraft() {
     this.match = draftMatch(this.selection, this.seed, this.practice, ownedFighters())
     this.selection = [...this.match.player]
+    if (this.practice && getProfile()) void this.startVerifiedPractice(); else this.beginBattle()
+  }
+  /** Signed-in practice: the server picks the seed, simulates the match and records the reward; this scene only replays it. */
+  private async startVerifiedPractice() {
+    this.phase = 'countdown' // inert while waiting for the server
+    const launch = await practiceMatch(this.match.player)
+    if (!this.sys.isActive()) return
+    if (launch) {
+      this.match = { ...this.match, ai: launch.robots, combatSeed: launch.combatSeed }
+      this.serverPracticeWin = launch.playerWon
+      this.practiceReward = !launch.playerWon ? undefined : launch.limited ? { status: 'limited' } : { status: 'ok', coins: launch.coins, diamonds: 0 }
+    } else this.practiceReward = { status: 'failed' } // still playable, but no reward is claimed
     this.beginBattle()
   }
   private beginBattle() {
@@ -293,7 +308,7 @@ export class ArenaScene extends Phaser.Scene {
     const side = { player: -122, ai: 122 }
     const names = this.online
       ? { player: this.online.names[this.viewer], ai: this.online.names[this.other(this.viewer)] } // left = me, right = opponent
-      : { player: loadPlayer().name ?? t('guest'), ai: this.practice ? t('botTeam') : RIVAL_NAMES[seed % RIVAL_NAMES.length]! }
+      : { player: getProfile()?.displayName ?? getGuest()?.name ?? t('guest'), ai: this.practice ? t('botTeam') : RIVAL_NAMES[seed % RIVAL_NAMES.length]! }
     const parts: Phaser.GameObjects.GameObject[] = [this.scoreGfx, this.roundText, this.scoreText]
     if (this.practice) parts.push(this.label(0, 74, t('practice'), 13, '#ffd367').setOrigin(.5).setStroke('#173f46', 4))
     const counts: Partial<typeof this.counts> = {}, hearts: Partial<typeof this.hearts> = {}
@@ -385,7 +400,7 @@ export class ArenaScene extends Phaser.Scene {
     this.totalTicks += this.simulation!.tick
     this.series = recordRound(this.series, winner)
     this.updateHud()
-    if (this.series.winner) { this.phase = 'result'; this.time.delayedCall(750, () => this.online ? void this.showOnlineResult() : this.showResult()); return }
+    if (this.series.winner) { this.phase = 'result'; this.time.delayedCall(750, () => this.online ? void this.showOnlineResult() : void this.showResult()); return }
     this.roundNote = t(winner === 'draw' ? 'roundDraw' : winner === this.viewer ? 'roundYou' : 'roundRival')
     this.time.delayedCall(1000, () => this.startRound())
   }
@@ -398,17 +413,22 @@ export class ArenaScene extends Phaser.Scene {
     if (match && match.winnerId && (match.winnerId === me) !== (this.series.winner === this.viewer)) console.warn('[online] local replay disagrees with the server result; showing the server result')
     const mine = match ? (this.viewer === 'player' ? match.score1 : match.score2) ?? 0 : this.series.wins[this.viewer]
     const theirs = match ? (this.viewer === 'player' ? match.score2 : match.score1) ?? 0 : this.series.wins[this.other(this.viewer)]
-    const earned = Math.max(0, (getProfile()?.coins ?? 0) - this.coinsBefore)
+    const paid = iWon ? await fetchReward(online.matchId) : null
+    const reward: RewardInfo | undefined = !iWon ? undefined : paid ? { status: 'ok', ...paid } : { status: 'failed' }
     navigate(this, 'Results', {
       match: this.match, winner: iWon ? 'player' : 'ai', seconds: (this.totalTicks * CONFIG.tickMs / 1000).toFixed(1),
       survivors: this.simulation!.units.filter(u => u.hp > 0 && u.team === this.viewer).length, score: `${mine}-${theirs}`,
-      online: { roomId: online.roomId, coinsEarned: earned, winnerTeam: iWon ? (this.viewer === 'player' ? this.match.player : this.match.ai) : (this.viewer === 'player' ? this.match.ai : this.match.player) },
+      reward, online: { roomId: online.roomId, winnerTeam: iWon ? (this.viewer === 'player' ? this.match.player : this.match.ai) : (this.viewer === 'player' ? this.match.ai : this.match.player) },
     })
   }
-  private showResult() {
-    const winner = this.series.winner!
+  private async showResult() {
+    const winner = this.serverPracticeWin === undefined ? this.series.winner! : this.serverPracticeWin ? 'player' : 'ai' // the server's verdict wins
+    let reward = this.practiceReward
+    if (this.practice && winner === 'player' && !getProfile() && getGuest()) reward = { status: 'session', coins: guestPracticeWin() }
+    if (reward?.status === 'ok') await refreshProfile() // balances shown elsewhere now match the server
+    if (!this.sys.isActive()) return
     navigate(this, 'Results', {
-      match: this.match, winner,
+      match: this.match, winner, reward,
       seconds: (this.totalTicks * CONFIG.tickMs / 1000).toFixed(1),
       survivors: this.simulation!.units.filter(u => u.hp > 0 && u.team === winner).length,
       score: `${this.series.wins.player}-${this.series.wins.ai}`,

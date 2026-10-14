@@ -37,6 +37,33 @@ export function button(scene: Phaser.Scene, x: number, y: number, title: string,
   })
   return root
 }
+export type IconGlyph = 'refresh' | 'prev' | 'next'
+/** Icon-only button, same face, height and press feel as `button`. `label` is the tooltip / accessible name (shown as the canvas title on hover). */
+export function iconButton(scene: Phaser.Scene, x: number, y: number, glyph: IconGlyph, label: string, action: () => void, options: { width?: number; color?: number } = {}) {
+  const width = options.width ?? 96, ink = PALETTE.ink
+  const g = scene.add.graphics().lineStyle(6, ink).fillStyle(ink)
+  if (glyph === 'prev' || glyph === 'next') {
+    const d = glyph === 'prev' ? -1 : 1
+    g.lineBetween(-12 * d, 0, 12 * d, 0).beginPath().moveTo(1 * d, -13).lineTo(13 * d, 0).lineTo(1 * d, 13).strokePath()
+  } else {
+    g.beginPath().arc(0, 0, 13, Phaser.Math.DegToRad(-40), Phaser.Math.DegToRad(250), false).strokePath()
+    g.fillTriangle(5, -22, 5, -4, 21, -13) // arrow head at the open end of the circle
+  }
+  const root = scene.add.container(x, y)
+  root.add([panel(scene, 0, 0, width, 58, options.color ?? PALETTE.mint), g]).setSize(width, 58).setInteractive({ useHandCursor: true })
+  let pressed = false, busy = false, enabled = true
+  const canvas = scene.game.canvas
+  root.on('pointerover', () => { canvas.title = label; if (enabled && !busy) scene.tweens.add({ targets: root, scale: 1.025, duration: 120 }) })
+  root.on('pointerout', () => { canvas.title = ''; pressed = false; if (!busy) scene.tweens.add({ targets: root, scale: 1, duration: 100 }) })
+  root.on('pointerdown', () => { if (!enabled || busy) return; pressed = true; audio.unlock(); root.setScale(.96) })
+  root.on('pointerup', () => {
+    if (!pressed || !enabled || busy) return
+    busy = true; pressed = false; audio.effect('tap')
+    scene.tweens.add({ targets: root, scale: 1, duration: 110, ease: 'Back.Out', onComplete: () => { busy = false; action() } })
+  })
+  scene.events.once('shutdown', () => { canvas.title = '' })
+  return Object.assign(root, { label, setEnabled(on: boolean) { enabled = on; root.setAlpha(on ? 1 : .4); if (root.input) root.input.cursor = on ? 'pointer' : 'default'; return root } })
+}
 export function background(_scene: Phaser.Scene) { arcadeBackground() }
 export function entrance(scene: Phaser.Scene) {
   if (scene.scene.key !== 'Arena') fitPortraitScene(scene)
