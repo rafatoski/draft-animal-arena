@@ -25,6 +25,10 @@ export type CombatEvent =
   | { type: 'dodge'; source: number; target: number }
   | { type: 'death'; target: number }
   | { type: 'end'; winner: Winner }
+/** Damage of one hit: defence is a ratio (def 40 = -40%, def 20 = -25%), never a flat subtraction, so low-attack / high-defence stat lines stay meaningful. */
+export const mitigated = (attack: number, defense: number, multiplier = 1) => Math.max(1, Math.round(attack * multiplier * 60 / (60 + defense)))
+/** Speed stat -> pixels per second. */
+export const moveSpeed = (speed: number) => 30 + 2 * speed
 /** Pure simulation. One step is always 50ms, regardless of display frame rate.
  * Nearest-target ties resolve by unit id; attacks resolve simultaneously.
  */
@@ -54,7 +58,7 @@ export class CombatSimulation {
     events.push({ type: 'hit', source: source.id, target: target.id, damage, critical, ...(ability && { ability }) })
     return true
   }
-  private hurt(source: Unit, target: Unit, multiplier: number) { return Math.max(1, Math.round(source.definition.attack * multiplier - target.definition.defense)) }
+  private hurt(source: Unit, target: Unit, multiplier: number) { return mitigated(source.definition.attack, target.definition.defense, multiplier) }
   /** Uses the first ready, usable ability of `unit` (this tick's action). Pure function of the state: no randomness. */
   private useAbility(unit: Unit, enemies: Unit[], at: Map<number, { x: number; y: number }>, events: CombatEvent[]) {
     const o = at.get(unit.id)!, dist = (e: Unit) => Math.hypot(at.get(e.id)!.x - o.x, at.get(e.id)!.y - o.y)
@@ -109,10 +113,10 @@ export class CombatSimulation {
   }
   /** In reach but waiting on the cooldown: ranged fighters kite back, melee fighters step away after a swing, everyone else circles the target. (ux, uy) points at it. */
   private reposition(unit: Unit, ux: number, uy: number, distance: number) {
-    const { speed, range, cooldown } = unit.definition, step = speed * CONFIG.tickMs / 1000
-    const back = range >= 100 ? distance < range * .7 : unit.cooldown > cooldown / 2
+    const { speed, range, cooldown } = unit.definition, step = moveSpeed(speed) * CONFIG.tickMs / 1000
+    const back = range >= 100 ? distance < range * .5 : unit.cooldown > cooldown / 2
     const side = (unit.id + Math.floor(this.tick / 24)) % 2 ? 1 : -1 // flips every 1.2 s
-    const [mx, my] = back ? [-ux * .8, -uy * .8] : [-uy * side * .5, ux * side * .5]
+    const [mx, my] = back ? [-ux * .5, -uy * .5] : [-uy * side * .5, ux * side * .5]
     const { left, right, top, bottom } = CONFIG.arena // margins keep the whole sprite (body, health bar, floating text) on screen
     unit.x = Math.min(right - 70, Math.max(left + 70, unit.x + mx * step)); unit.y = Math.min(bottom - 55, Math.max(top + 60, unit.y + my * step))
   }
@@ -148,13 +152,13 @@ export class CombatSimulation {
       const destination = positions.get(target.id)!
       const dx = destination.x - origin.x, dy = destination.y - origin.y
       const distance = Math.hypot(dx, dy)
-      if (distance > unit.definition.range) {
-        const move = Math.min(unit.definition.speed * CONFIG.tickMs / 1000, distance - unit.definition.range)
+      if (distance > unit.definition.range) { // closes 4px inside reach, so a target that backs off one step is still hittable next tick
+        const move = Math.min(moveSpeed(unit.definition.speed) * CONFIG.tickMs / 1000, distance - unit.definition.range + 4)
         unit.x += dx / distance * move
         unit.y += dy / distance * move
       } else if (unit.cooldown === 0 && !disarmed) {
         const critical = this.random.next() < unit.definition.crit
-        const damage = Math.max(1, Math.round((unit.definition.attack - target.definition.defense) * (critical ? 1.75 : 1)))
+        const damage = mitigated(unit.definition.attack, target.definition.defense, critical ? 1.75 : 1)
         this.strike(unit, target, damage, critical, events)
         unit.cooldown = unit.definition.cooldown
       } else this.reposition(unit, dx / distance, dy / distance, distance)

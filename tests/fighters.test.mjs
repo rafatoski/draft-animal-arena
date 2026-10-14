@@ -3,14 +3,14 @@ import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import { FIGHTERS, fighterById } from '../.test-build/game/fighters.js'
 import { ABILITIES } from '../.test-build/game/abilities.js'
-import { CombatSimulation } from '../.test-build/simulation/combat.js'
+import { CombatSimulation, mitigated } from '../.test-build/simulation/combat.js'
 import { runOnlineMatch } from '../.test-build/game/onlineSim.js'
 import { K9_LAYOUT, PLATYPUS_LAYOUT, ABILITY_SHEET, SHEET_FRAMES } from '../.test-build/game/sheetLayouts.js'
 import { priceOf } from '../.test-build/game/economy.js'
 import { draftMatch } from '../.test-build/game/match.js'
 
 const byId = Object.fromEntries(FIGHTERS.map(f => [f.id, f]))
-const power = f => f.attack + 2 * f.defense + f.speed / 3 + f.health / 10
+const points = f => f.attack + f.defense + f.speed
 const png = path => { const b = readFileSync(path); assert.equal(b.toString('latin1', 1, 4), 'PNG'); return [b.readUInt32BE(16), b.readUInt32BE(20)] }
 
 test('roster: the original six keep their order, K9 Enforcer and Agent Platypus are fighters 7 and 8', () => {
@@ -19,18 +19,20 @@ test('roster: the original six keep their order, K9 Enforcer and Agent Platypus 
   assert.deepEqual(FIGHTERS.slice(0, 6).filter(f => f.abilities), []) // the originals have no active abilities: only the basic attack
 })
 
-test('balance tiers: starters < tier 2 < tier 3, with the starters keeping their roles', () => {
-  const starters = ['chicken', 'capybara', 'frog'].map(id => byId[id]), tier2 = ['raccoon', 'fox', 'pig'].map(id => byId[id]), tier3 = ['k9', 'platypus'].map(id => byId[id])
-  assert.ok(Math.max(...starters.map(power)) < Math.min(...tier2.map(power)), 'every tier-2 fighter is stronger than every starter')
-  assert.ok(Math.max(...tier2.map(power)) < Math.min(...tier3.map(power)), 'both tier-3 fighters are stronger than every tier-2 fighter')
-  assert.ok(Math.min(...tier2.map(power)) / Math.max(...starters.map(power)) < 1.15, 'tier 2 is only a little better') // "un poquito mejor"
-  // chicken = the most balanced: its three stats are the closest together once each is measured against the roster's best
-  const max = k => Math.max(...FIGHTERS.map(f => f[k])), spread = f => { const n = [f.attack / max('attack'), f.defense / max('defense'), f.speed / max('speed')]; return Math.max(...n) - Math.min(...n) }
-  assert.deepEqual(starters.map(spread).map((s, i) => [s, starters[i].id]).sort((a, b) => a[0] - b[0])[0][1], 'chicken')
-  assert.equal(starters.reduce((a, b) => a.defense >= b.defense ? a : b).id, 'capybara') // best defence of the starters
-  assert.equal(starters.reduce((a, b) => a.attack >= b.attack ? a : b).id, 'frog')      // best attack of the starters
-  assert.deepEqual(tier3.map(f => f.abilities.length), [3, 3])
+test('balance: base points are 60 / 70 / 80 by tier, the starters are the exact stat lines asked for, and health is nearly equal', () => {
+  const stats = id => [byId[id].attack, byId[id].defense, byId[id].speed]
+  assert.deepEqual(stats('chicken'), [20, 20, 20]); assert.deepEqual(stats('capybara'), [10, 40, 10]); assert.deepEqual(stats('frog'), [30, 15, 15])
+  for (const id of ['chicken', 'capybara', 'frog']) assert.equal(points(byId[id]), 60, id)
+  for (const id of ['raccoon', 'fox', 'pig']) assert.equal(points(byId[id]), 70, id)
+  for (const id of ['k9', 'platypus']) assert.equal(points(byId[id]), 80, id)
+  const hp = FIGHTERS.map(f => f.health); assert.ok(Math.max(...hp) - Math.min(...hp) <= 5, 'health differs by at most 5 points across the roster')
+  assert.deepEqual(['k9', 'platypus'].map(id => byId[id].abilities.length), [3, 3])
   assert.ok(byId.k9.defense > byId.platypus.defense * 2 && byId.platypus.speed > byId.k9.speed * 1.5) // tank vs assassin
+})
+
+test('defence is a ratio, never reduces a hit to nothing, and speed maps to pixels per second', () => {
+  assert.equal(mitigated(20, 20), 15); assert.equal(mitigated(10, 40), 6); assert.equal(mitigated(30, 15), 24)
+  assert.equal(mitigated(1, 500), 1); assert.ok(mitigated(30, 40) > mitigated(30, 80))
 })
 
 test('unlock prices: raccoon 5, K9 and Platypus 15, pig and fox 10, starters free', () => {
@@ -71,7 +73,7 @@ test('K9 Shield Rush: dashes in from range, hurts and stuns the target, then goe
   const events = run(sim, 1)
   assert.ok(events.some(e => e.type === 'ability' && e.ability === 'rush' && e.source === 0))
   const hit = events.find(e => e.type === 'hit' && e.ability === 'rush')
-  assert.equal(hit.damage, Math.max(1, Math.round(k9.definition.attack * ABILITIES.rush.damage - foe.definition.defense)))
+  assert.equal(hit.damage, mitigated(k9.definition.attack, foe.definition.defense, ABILITIES.rush.damage))
   assert.ok(foe.stun > 0 && foe.stun <= ABILITIES.rush.stun, 'target stunned')
   assert.ok(Math.hypot(k9.x - foe.x, k9.y - foe.y) <= k9.definition.range, 'K9 landed in melee reach')
   assert.equal(k9.abilityCooldown.rush, ABILITIES.rush.cooldown)
@@ -140,7 +142,7 @@ test('Agent Platypus Operation Blackout: lands beside the nearest enemy and stri
   place(pl, 240, 700); place(foes[0], 140, 520); place(foes[1], 240, 500); place(foes[2], 340, 520); pl.abilityCooldown.blackout = 0
   const events = run(sim, 1), hits = events.filter(e => e.type === 'hit' && e.ability === 'blackout')
   assert.equal(hits.length, 3); assert.ok(Math.hypot(pl.x - foes[1].x, pl.y - foes[1].y) < 120)
-  for (const h of hits) { const t = sim.units[h.target]; assert.equal(h.damage, Math.max(1, Math.round(pl.definition.attack * ABILITIES.blackout.damage - t.definition.defense)) * ABILITIES.blackout.hits) }
+  for (const h of hits) { const t = sim.units[h.target]; assert.equal(h.damage, mitigated(pl.definition.attack, t.definition.defense, ABILITIES.blackout.damage) * ABILITIES.blackout.hits) }
   assert.ok(pl.cloak > 0 && pl.abilityCooldown.blackout === ABILITIES.blackout.cooldown)
   assert.ok(hits.reduce((s, h) => s + h.damage, 0) < 3 * foes[0].definition.health, 'a burst, not an instant win')
 })

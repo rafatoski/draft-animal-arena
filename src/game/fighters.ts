@@ -7,21 +7,21 @@ export interface FighterDefinition {
   abilities?: readonly AbilityId[]
 }
 export const FIGHTERS: readonly FighterDefinition[] = [
-  { id: 'chicken', name: 'Boxing Chicken', role: 'QUICK JABS', color: 0xffe4a1, health: 140, attack: 20, defense: 6, speed: 60, crit: .20, range: 43, cooldown: 12 },
-  { id: 'capybara', name: 'Capybara Tank', role: 'UNBOTHERED', color: 0xbb9169, health: 180, attack: 20, defense: 8, speed: 50, crit: .08, range: 48, cooldown: 18 },
-  { id: 'raccoon', name: 'Ninja Raccoon', role: 'TRASH ASSASSIN', color: 0x9ca9be, health: 125, attack: 25, defense: 5, speed: 88, crit: .32, range: 40, cooldown: 15 },
-  { id: 'frog', name: 'Wizard Frog', role: 'CROAK & DESTROY', color: 0x91d681, health: 120, attack: 27, defense: 4, speed: 45, crit: .18, range: 140, cooldown: 24 },
-  { id: 'fox', name: 'Archer Fox', role: 'VERY POINTY', color: 0xf6a05f, health: 130, attack: 28, defense: 6, speed: 66, crit: .24, range: 165, cooldown: 19 },
-  { id: 'pig', name: 'Berserker Pig', role: 'FULL HAM', color: 0xf39eb0, health: 160, attack: 31, defense: 6, speed: 56, crit: .15, range: 46, cooldown: 24 },
-  // POWER TIERS (power = attack + 2*defense + speed/3 + health/10, see tests/fighters.test.mjs):
-//   starters  chicken (the balanced one), capybara (best defence), frog (best attack)   ~57-72
-//   tier 2    raccoon, fox, pig: a little stronger than any starter                        ~74-79
-//   tier 3    K9 Enforcer, Agent Platypus: clearly stronger again                          ~82-85
+  { id: 'chicken', name: 'Boxing Chicken', role: 'QUICK JABS', color: 0xffe4a1, health: 150, attack: 20, defense: 20, speed: 20, crit: .20, range: 43, cooldown: 13 },
+  { id: 'capybara', name: 'Capybara Tank', role: 'UNBOTHERED', color: 0xbb9169, health: 154, attack: 10, defense: 40, speed: 10, crit: .15, range: 48, cooldown: 8 },
+  { id: 'raccoon', name: 'Ninja Raccoon', role: 'TRASH ASSASSIN', color: 0x9ca9be, health: 150, attack: 25, defense: 10, speed: 35, crit: .38, range: 40, cooldown: 11 },
+  { id: 'frog', name: 'Wizard Frog', role: 'CROAK & DESTROY', color: 0x91d681, health: 150, attack: 30, defense: 15, speed: 15, crit: .18, range: 125, cooldown: 24 },
+  { id: 'fox', name: 'Archer Fox', role: 'VERY POINTY', color: 0xf6a05f, health: 150, attack: 30, defense: 10, speed: 30, crit: .2, range: 145, cooldown: 24 },
+  { id: 'pig', name: 'Berserker Pig', role: 'FULL HAM', color: 0xf39eb0, health: 152, attack: 32, defense: 22, speed: 16, crit: .15, range: 46, cooldown: 20 },
+  // BASE POINT BUDGET: attack + defense + speed = 60 for the starters, 70 for tier 2, 80 for tier 3 (health, range, cooldown and crit are role flavour, see tests/fighters.test.mjs).
+//   starters  chicken 20/20/20 (standard), capybara 10/40/10 (defence), frog 30/15/15 (attack)
+//   tier 2    raccoon 25/10/35, fox 30/10/30, pig 32/22/16        tier 3   K9 Enforcer 25/40/15, Agent Platypus 38/8/34
+// Defence mitigates by ratio and speed is a stat, not px/s: see mitigated() and moveSpeed() in simulation/combat.ts.
 // Every fighter can then be raised further with coin upgrades (+5 per level, see upgrades.ts).
   // K9 Enforcer: tank / bruiser. Highest-class defense and health after the capybara, moderate damage, medium-low speed, control abilities.
-  { id: 'k9', name: 'K9 Enforcer', role: 'LAW & ORDER', color: 0xd9913a, health: 190, attack: 27, defense: 11, speed: 46, crit: .10, range: 44, cooldown: 20, abilities: ['codered', 'rush', 'bite'] },
+  { id: 'k9', name: 'K9 Enforcer', role: 'LAW & ORDER', color: 0xd9913a, health: 154, attack: 25, defense: 40, speed: 15, crit: .10, range: 44, cooldown: 20, abilities: ['codered', 'rush', 'bite'] },
   // Agent Platypus: assassin / trickster. Very high attack and speed, paper-thin, relies on evasion, poison and a burst ultimate.
-  { id: 'platypus', name: 'Agent Platypus', role: 'SHADOW AGENT', color: 0x6a4a8f, health: 120, attack: 34, defense: 3, speed: 95, crit: .22, range: 40, cooldown: 12, abilities: ['blackout', 'venom', 'cloak'] },
+  { id: 'platypus', name: 'Agent Platypus', role: 'SHADOW AGENT', color: 0x6a4a8f, health: 150, attack: 38, defense: 8, speed: 34, crit: .18, range: 40, cooldown: 14, abilities: ['blackout', 'venom', 'cloak'] },
 ]
 /** Practice opponents. Deliberately not in FIGHTERS, so drafting and the roster screen never see them. */
 export const ROBOTS: readonly FighterDefinition[] = ['robot1', 'robot2', 'robot3'].map(id => (

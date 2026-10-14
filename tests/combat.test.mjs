@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
-import { CombatSimulation } from '../.test-build/simulation/combat.js'
+import { CombatSimulation, mitigated } from '../.test-build/simulation/combat.js'
 import { SeededRandom } from '../.test-build/simulation/random.js'
 import { FIGHTERS } from '../.test-build/game/fighters.js'
 
@@ -49,7 +49,7 @@ test('defense, critical multiplier and cooldown govern damage', () => {
   const hits = sim.step().filter(e => e.type === 'hit')
   for (const hit of hits) {
     const a = sim.units[hit.source].definition, d = sim.units[hit.target].definition
-    assert.equal(hit.damage, Math.max(1, Math.round((a.attack - d.defense) * (hit.critical ? 1.75 : 1))))
+    assert.equal(hit.damage, mitigated(a.attack, d.defense, hit.critical ? 1.75 : 1))
   }
   assert.equal(sim.step().filter(e => e.type === 'hit').length, 0)
 })
