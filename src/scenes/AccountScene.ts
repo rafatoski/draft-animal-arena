@@ -32,7 +32,7 @@ export class AccountScene extends Phaser.Scene {
       add(panel(this, 240, 290, 400, 250, 0x4a2c8a),
         text(this, 240, 200, profile.displayName, 30, '#fff4d9').setStroke('#173f46', 5).setWordWrapWidth(380),
         text(this, 240, 238, t('googleTag'), 14, '#d9ccff'))
-      const stats: [TextKey, number][] = [['pointsLabel', profile.rankingPoints], ['coinsLabel', profile.coins], ['diamondsLabel', profile.diamonds], ['winsLabel', profile.wins]]
+      const stats: [TextKey, number][] = [['winsLabel', profile.wins], ['lossesLabel', profile.losses], ['coinsLabel', profile.coins], ['diamondsLabel', profile.diamonds]]
       stats.forEach(([label, value], i) => add(text(this, 130 + (i % 2) * 220, 292 + Math.floor(i / 2) * 62, String(value), 28, '#ffd367').setStroke('#173f46', 4),
         text(this, 130 + (i % 2) * 220, 318 + Math.floor(i / 2) * 62, t(label), 11, '#d9ccff')))
       add(button(this, 240, 460, t('playOnline'), () => navigate(this, 'Online'), { color: PALETTE.yellow }),

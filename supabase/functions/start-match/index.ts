@@ -30,7 +30,7 @@ Deno.serve(async (req) => {
 
   // Idempotent: a second call (or a retry after a crash) simulates the same inputs and finalize_match ignores repeats.
   if (match.match_status === 'in_progress') {
-    const result = runOnlineMatch(match.team_1, match.team_2, Number(match.combat_seed))
+    const result = runOnlineMatch(match.team_1, match.team_2, Number(match.combat_seed), { player: match.bonus_1, ai: match.bonus_2 }) // the snapshot stored with the match: purchased upgrades, loaded by the server
     const done = await admin.rpc('finalize_match', {
       p_match: match.match_id, p_winner: result.winner, p_score_1: result.score[0], p_score_2: result.score[1],
       p_rounds: result.rounds, p_ticks: result.ticks,

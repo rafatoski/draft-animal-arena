@@ -13,9 +13,10 @@ import { animalArt } from '../game/animalArt'
 import { fireLaser } from '../game/robotArt'
 import { spriteKit, preloadFighterSprites } from '../game/fighterSprites'
 import type { SpriteKit } from '../game/spriteKit'
+import type { TextKey } from '../services/i18n'
 import { CombatSimulation } from '../simulation/combat'
 import type { CombatEvent, Team, Unit, Winner } from '../simulation/combat'
-import { fetchReward, getProfile, ownedFighters, practiceMatch, refreshProfile, waitForResult } from '../services/online'
+import { fetchReward, getProfile, myBonus, ownedFighters, practiceMatch, refreshProfile, waitForResult } from '../services/online'
 import { draftMatch, newSeed } from '../game/match'
 import { newSeries, recordRound, roundSeed, isFinalRound, WINS_NEEDED } from '../game/series'
 import type { Series } from '../game/series'
@@ -27,10 +28,12 @@ import { miniFighterCard } from '../ui/miniFighterCard'
 import { preloadCardArt } from '../ui/collectibleCard'
 import { GAME_FONT_FAMILY } from '../ui/typography'
 import { battleBackground } from '../ui/arcadeBackground'
+import { abilityEffect } from '../ui/abilityEffects'
 
+const DEATH_RANK = 4
 type Phase = 'ready' | 'draft' | 'countdown' | 'battle' | 'roundEnd' | 'result'
 interface UnitView { root: Phaser.GameObjects.Container; art: Phaser.GameObjects.Container; health: Phaser.GameObjects.Graphics; hpText: Phaser.GameObjects.Text; name: Phaser.GameObjects.Text
-  /** Spritesheet fighters only. `busy` is the one-shot priority: 0 none, 1 attack, 2 hit, 3 death. */
+  /** Spritesheet fighters only. `busy` is the one-shot priority: 0 none, 1 attack, 2 hit, 3 ability, 4 death. */
   sprite?: Phaser.GameObjects.Sprite; kit?: SpriteKit; busy: number; px: number; py: number }
 /** Online match handed over by the lobby: the server's match id, which side this viewer is, and both names. */
 export interface OnlineLaunch { matchId: string; roomId: string; viewer: Team; names: { player: string; ai: string } }
@@ -118,7 +121,7 @@ export class ArenaScene extends Phaser.Scene {
     const onKey = (event: KeyboardEvent) => {
       if (event.repeat) return
       if (event.key === 'Escape') navigate(this, 'Menu')
-      if (/^[1-6]$/.test(event.key)) { audio.unlock(); this.select(Number(event.key) - 1) }
+      if (/^[1-8]$/.test(event.key)) { audio.unlock(); this.select(Number(event.key) - 1) }
     }
     this.input.keyboard?.on('keydown', onKey)
     this.events.once('shutdown', () => this.input.keyboard?.off('keydown', onKey))
@@ -181,8 +184,8 @@ export class ArenaScene extends Phaser.Scene {
     this.draftBar = this.add.graphics()
     this.ui.add([this.draftClock, this.draftBar])
     FIGHTERS.forEach((fighter, i) => {
-      const card = miniFighterCard(this, fighter, 130, 150, i)
-      card.root.setPosition(240 + ((i % 3) - 1) * 146, 345 + Math.floor(i / 3) * 215).setInteractive({ useHandCursor: true })
+      const card = miniFighterCard(this, fighter, 104, 126, i) // four per row: the roster has eight fighters
+      card.root.setPosition(240 + ((i % 4) - 1.5) * 111, 345 + Math.floor(i / 4) * 205).setInteractive({ useHandCursor: true })
       card.root.on('pointerdown', () => { audio.unlock(); this.select(i) })
       this.cards.push(card); this.ui.add(card.root)
     })
@@ -226,6 +229,7 @@ export class ArenaScene extends Phaser.Scene {
   private lockDraft() {
     this.match = draftMatch(this.selection, this.seed, this.practice, ownedFighters())
     this.selection = [...this.match.player]
+    if (getProfile()) this.match.bonus = { player: myBonus(this.match.player) } // signed-in players fight with their purchased upgrades; guests use base stats
     if (this.practice && getProfile()) void this.startVerifiedPractice(); else this.beginBattle()
   }
   /** Signed-in practice: the server picks the seed, simulates the match and records the reward; this scene only replays it. */
@@ -234,7 +238,7 @@ export class ArenaScene extends Phaser.Scene {
     const launch = await practiceMatch(this.match.player)
     if (!this.sys.isActive()) return
     if (launch) {
-      this.match = { ...this.match, ai: launch.robots, combatSeed: launch.combatSeed }
+      this.match = { ...this.match, ai: launch.robots, combatSeed: launch.combatSeed, bonus: { player: launch.bonus } } // the server's upgrade snapshot
       this.serverPracticeWin = launch.playerWon
       this.practiceReward = !launch.playerWon ? undefined : launch.limited ? { status: 'limited' } : { status: 'ok', coins: launch.coins, diamonds: 0 }
     } else this.practiceReward = { status: 'failed' } // still playable, but no reward is claimed
@@ -250,7 +254,7 @@ export class ArenaScene extends Phaser.Scene {
     this.draftClock = undefined; this.draftBar = undefined
     for (const view of this.views.values()) { this.tweens.killTweensOf([view.root, view.art]); view.root.destroy() }
     this.views.clear(); this.accumulator = 0
-    this.simulation = new CombatSimulation(this.match.player, this.match.ai, roundSeed(this.match.combatSeed, this.series.attempt))
+    this.simulation = new CombatSimulation(this.match.player, this.match.ai, roundSeed(this.match.combatSeed, this.series.attempt), this.match.bonus)
     for (const unit of this.simulation.units) this.createUnit(unit)
     this.updateHud(); this.resizeArena()
     // Every round: title banner, 3-2-1, then FIGHT!
@@ -303,8 +307,8 @@ export class ArenaScene extends Phaser.Scene {
     this.world.add(root)
     const view: UnitView = { root, art, health, hpText, name, sprite, kit, busy: 0, px: unit.x, py: this.vy(unit.y) }
     // Clears the one-shot lock; the sprite owns this listener, so it is destroyed with it each round.
-    sprite?.on(Phaser.Animations.Events.ANIMATION_COMPLETE, (anim: Phaser.Animations.Animation) => {
-      if (anim.key === kit!.anims.attack || anim.key === kit!.anims.hit) view.busy = 0
+    sprite?.on(Phaser.Animations.Events.ANIMATION_COMPLETE, () => {
+      if (view.busy < DEATH_RANK) view.busy = 0 // every one-shot but death hands control back to idle / walk
     })
     this.views.set(unit.id, view)
     this.drawHealth(unit)
@@ -363,12 +367,16 @@ export class ArenaScene extends Phaser.Scene {
     if (this.roundText.width > 80) this.roundText.setScale(80 / this.roundText.width)
     this.scoreText.setText(`${this.series.wins[this.viewer]} - ${this.series.wins[this.other(this.viewer)]}`)
   }
-  /** DEATH > HIT > ATTACK: a lower-priority one-shot never interrupts a higher one, and death plays once. */
-  private playOneShot(view: UnitView, kind: 'attack' | 'hit' | 'death') {
-    if (!view.sprite) return
-    const rank = { attack: 1, hit: 2, death: 3 }[kind]
-    if (view.busy === 3 || view.busy > rank) return
-    view.sprite.play(view.kit!.anims[kind]); view.busy = rank
+  /** DEATH > ABILITY > HIT > ATTACK: a lower-priority one-shot never interrupts a higher one, and death plays once. */
+  private playOneShot(view: UnitView, kind: 'attack' | 'hit' | 'death' | 'ability', key = view.kit?.anims[kind === 'ability' ? 'attack' : kind]) {
+    if (!view.sprite || !key) return
+    const rank = { attack: 1, hit: 2, ability: 3, death: DEATH_RANK }[kind]
+    if (view.busy === DEATH_RANK || view.busy > rank) return
+    view.sprite.play(key); view.busy = rank
+  }
+  private floatText(x: number, y: number, label: string, color: string) {
+    const note = this.label(x, y - 64, label, 15, color).setOrigin(.5).setStroke('#253344', 4).setDepth(900)
+    this.world.add(note); this.tweens.add({ targets: note, y: note.y - 30, alpha: 0, duration: 800, onComplete: () => note.destroy() })
   }
   private showEvent(event: CombatEvent) {
     if (event.type === 'hit') {
@@ -384,8 +392,7 @@ export class ArenaScene extends Phaser.Scene {
         line.lineBetween(attacker.x, this.vy(attacker.y), target.x, this.vy(target.y))
         this.tweens.add({ targets: line, alpha: 0, duration: 140, onComplete: () => line.destroy() })
       }
-      if (source.sprite) source.sprite.setFlipX(source.kit!.flip(target.x - attacker.x))
-      this.playOneShot(source, 'attack')
+      if (source.sprite && !event.ability) { source.sprite.setFlipX(source.kit!.flip(target.x - attacker.x)); this.playOneShot(source, 'attack') } // an ability already played its own clip
       if (target.hp > 0) this.playOneShot(view, 'hit')
       this.tweens.killTweensOf(view.art)
       view.art.setX(0).setAlpha(.6)
@@ -405,9 +412,24 @@ export class ArenaScene extends Phaser.Scene {
       const quip = this.label(view.root.x, view.root.y - 35, [t('nap'), t('oof'), t('meant')][event.target % 3]!, 13, C.cream).setOrigin(.5).setDepth(900)
       this.world.add(quip)
       this.tweens.add({ targets: quip, y: quip.y - 35, alpha: 0, duration: 1000, onComplete: () => quip.destroy() })
-    } else {
-      if (this.phase === 'battle') this.endRound(event.winner)
-    }
+    } else if (event.type === 'ability') {
+      const source = this.views.get(event.source)!, unit = this.simulation!.units[event.source]!
+      const clip = source.kit?.anims.abilities?.[event.ability]
+      const first = this.simulation!.units[event.targets[0] ?? event.source]!
+      if (source.sprite) source.sprite.setFlipX(source.kit!.flip(first.x - unit.x))
+      this.playOneShot(source, 'ability', clip)
+      abilityEffect(this, this.world, event.ability, this.at(unit), event.targets.map(id => this.at(this.simulation!.units[id]!)))
+      this.floatText(unit.x, this.vy(unit.y), t(`ability_${event.ability}` as TextKey), '#e9d4ff')
+    } else if (event.type === 'status') {
+      const target = this.simulation!.units[event.target]!
+      this.floatText(target.x, this.vy(target.y), t(`status_${event.status}` as TextKey), event.status === 'poison' ? '#9dff6a' : '#ffe28d')
+    } else if (event.type === 'poison') {
+      const target = this.simulation!.units[event.target]!, view = this.views.get(event.target)!
+      this.floatText(target.x, this.vy(target.y), `−${event.damage}`, '#9dff6a'); this.drawHealth(target); void view
+    } else if (event.type === 'dodge') {
+      const target = this.simulation!.units[event.target]!
+      this.floatText(target.x, this.vy(target.y), t('dodge'), '#4de1ff')
+    } else if (this.phase === 'battle') this.endRound(event.winner)
   }
   /** `phase` leaves 'battle' synchronously, so a round can only be scored once. */
   private endRound(winner: Winner) {
@@ -469,9 +491,16 @@ export class ArenaScene extends Phaser.Scene {
           if (unit.hp <= 0) continue
           const dx = unit.x - view.px
           const dy = sy - view.py
-          if (Math.abs(dx) > .05) view.sprite.setFlipX(view.kit!.flip(dx))
+          if (Math.abs(dx) > .05) view.sprite.setFlipX((view.kit!.walkFlip ?? view.kit!.flip)(dx))
           // ignoreIfPlaying: a looping clip must not restart on every tick.
-          if (!view.busy) view.sprite.play(Math.hypot(dx, dy) > .05 ? view.kit!.walk(dx, dy) : view.kit!.anims.idle, true)
+          // Status looks: stunned = stun clip (or a blue tint), poisoned = green tint, cloaked = translucent shimmer.
+          const tint = unit.stun > 0 ? 0x9ab0ff : unit.poison > 0 ? 0xb6f5a0 : undefined
+          if (tint !== undefined) view.sprite.setTint(tint); else view.sprite.clearTint()
+          view.sprite.setAlpha(unit.cloak > 0 ? .4 + .1 * Math.sin(this.simulation.tick) : 1)
+          if (!view.busy) {
+            if (unit.stun > 0 && view.kit!.anims.stun) view.sprite.play(view.kit!.anims.stun, true)
+            else view.sprite.play(Math.hypot(dx, dy) > .05 ? view.kit!.walk(dx, dy) : view.kit!.anims.idle, true)
+          }
           view.px = unit.x; view.py = sy
         } else if (unit.hp > 0) view.art.setAngle(Math.sin(this.simulation.tick * .32 + unit.id) * 4)
       }

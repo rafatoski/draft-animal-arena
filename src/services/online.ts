@@ -2,11 +2,15 @@ import type { RealtimeChannel } from '@supabase/supabase-js'
 import { supabase } from './supabase'
 import { realSession, onAuthChange } from './auth'
 import { ECONOMY } from '../game/economy'
+import { bonusFromLevels, noLevels } from '../game/upgrades'
+import type { StatLevels, TeamBonus, UpgradeStat } from '../game/upgrades'
 
 // ───────── profile + progression (read-only for the browser; the server pays out) ─────────
 export interface OnlineProfile {
   id: string; displayName: string; accountType: 'guest' | 'google'
-  coins: number; diamonds: number; owned: string[]; rankingPoints: number; wins: number; losses: number; totalMatches: number
+  coins: number; diamonds: number; owned: string[]; wins: number; losses: number; totalMatches: number
+  /** Purchased upgrade levels per fighter (missing fighter = all zero). Loaded from fighter_upgrades. */
+  upgrades: Record<string, StatLevels>
 }
 let profile: OnlineProfile | null = null
 const profileListeners = new Set<(p: OnlineProfile | null) => void>()
@@ -20,14 +24,17 @@ export async function refreshProfile(): Promise<OnlineProfile | null> {
   try {
     const session = await realSession()
     if (!session) { setProfile(null); return null }
-    const [p, g, f] = await Promise.all([
+    const [p, g, f, u] = await Promise.all([
       supabase.from('profiles').select('id, display_name, account_type').eq('id', session.user.id).single(),
       supabase.from('player_progress').select('*').eq('player_id', session.user.id).single(),
       supabase.from('player_fighters').select('fighter_id').eq('player_id', session.user.id),
+      supabase.from('fighter_upgrades').select('fighter_id, stat, level').eq('player_id', session.user.id),
     ])
-    if (p.error || g.error) return profile
+    if (p.error || g.error) { console.warn('[profile] could not load', p.error?.message ?? g.error?.message); return profile }
+    const upgrades: Record<string, StatLevels> = {}
+    for (const row of u.error ? [] : u.data) (upgrades[row.fighter_id] ??= noLevels())[row.stat as UpgradeStat] = row.level
     setProfile({ id: p.data.id, displayName: p.data.display_name, accountType: p.data.account_type,
-      coins: g.data.coins, diamonds: g.data.diamonds ?? 0, owned: f.error ? [...ECONOMY.starterFighters] : f.data.map(r => r.fighter_id), rankingPoints: g.data.ranking_points,
+      coins: g.data.coins, diamonds: g.data.diamonds ?? 0, owned: f.error ? [...ECONOMY.starterFighters] : f.data.map(r => r.fighter_id), upgrades,
       wins: g.data.wins, losses: g.data.losses, totalMatches: g.data.total_matches })
   } catch { /* offline */ }
   return profile
@@ -44,6 +51,29 @@ export function startOnlineProfile() {
  * Fighters the player may use. Signed in: what the server says they own. Signed out or offline: the starters only;
  * the locked three stay locked until a purchase is recorded on the server.
  */
+/** Bonus map for the combat engine from the signed-in player's purchased upgrades (empty for guests / signed out). */
+export const myBonus = (team: readonly string[]): TeamBonus => bonusFromLevels(Object.fromEntries(team.filter(id => profile?.upgrades[id]).map(id => [id, profile!.upgrades[id]!])))
+
+export type UpgradeResult = { ok: true; coins: number; level: number; nextCost: number | null } | { ok: false; reason: 'signed-out' | 'not-enough' | 'changed' | 'maxed' | 'locked' | 'failed'; missing?: number }
+/** Buys one upgrade level. The server prices it and checks identity, ownership, balance and that `level` is still current (so a repeat charges nothing). */
+export async function upgradeFighter(id: string, stat: UpgradeStat, level: number): Promise<UpgradeResult> {
+  if (!supabase || !profile) return { ok: false, reason: 'signed-out' }
+  try {
+    const { data, error } = await supabase.rpc('upgrade_fighter', { p_fighter: id, p_stat: stat, p_expected_level: level })
+    if (error) {
+      console.warn('[upgrade] refused:', error.message)
+      const need = /need (\d+) more/.exec(error.message)
+      await refreshProfile()
+      if (need) return { ok: false, reason: 'not-enough', missing: Number(need[1]) }
+      if (/level changed/.test(error.message)) return { ok: false, reason: 'changed' }
+      if (/max level/.test(error.message)) return { ok: false, reason: 'maxed' }
+      if (/not unlocked/.test(error.message)) return { ok: false, reason: 'locked' }
+      return { ok: false, reason: 'failed' }
+    }
+    await refreshProfile()
+    return { ok: true, coins: data.coins, level: data.level, nextCost: data.next_cost }
+  } catch { return { ok: false, reason: 'failed' } }
+}
 export const ownedFighters = (): readonly string[] => profile?.owned ?? ECONOMY.starterFighters
 export const isUnlocked = (id: string) => ownedFighters().includes(id)
 
@@ -74,13 +104,13 @@ export async function renameProfile(name: string): Promise<boolean> {
 }
 
 // ───────── leaderboard ─────────
-export interface LeaderEntry { position: number; playerId: string; player: string; rankingPoints: number; wins: number; losses: number; totalMatches: number }
+export interface LeaderEntry { position: number; playerId: string; player: string; wins: number; losses: number; totalMatches: number; winRate: number }
 export async function fetchLeaderboard(offset: number, limit: number): Promise<{ rows: LeaderEntry[]; error?: string }> {
   if (!supabase) return { rows: [], error: 'offline' }
   try {
     const { data, error } = await supabase.from('leaderboard').select('*').order('position', { ascending: true }).range(offset, offset + limit - 1)
     if (error) return { rows: [], error: error.message }
-    return { rows: data.map(r => ({ position: r.position, playerId: r.player_id, player: r.player, rankingPoints: r.ranking_points, wins: r.wins, losses: r.losses, totalMatches: r.total_matches })) }
+    return { rows: data.map(r => ({ position: r.position, playerId: r.player_id, player: r.player, wins: r.wins, losses: r.losses, totalMatches: r.total_matches, winRate: r.win_rate })) }
   } catch { return { rows: [], error: 'offline' } }
 }
 
@@ -159,7 +189,7 @@ export async function startMatch(roomId: string): Promise<RoomResult<{ matchId: 
 }
 
 export interface OnlineMatch {
-  id: string; player1: string; player2: string; team1: string[]; team2: string[]; matchSeed: number; combatSeed: number
+  id: string; player1: string; player2: string; team1: string[]; team2: string[]; matchSeed: number; combatSeed: number; bonus1: TeamBonus; bonus2: TeamBonus
   status: 'in_progress' | 'finished' | 'aborted'; winnerId: string | null; score1: number | null; score2: number | null; ticks: number | null
 }
 export async function fetchMatch(matchId: string): Promise<OnlineMatch | null> {
@@ -167,7 +197,7 @@ export async function fetchMatch(matchId: string): Promise<OnlineMatch | null> {
   try {
     const { data, error } = await supabase.from('matches').select('*').eq('id', matchId).single()
     if (error) return null
-    return { id: data.id, player1: data.player_1_id, player2: data.player_2_id, team1: data.team_1, team2: data.team_2, matchSeed: Number(data.match_seed), combatSeed: Number(data.combat_seed),
+    return { id: data.id, player1: data.player_1_id, player2: data.player_2_id, team1: data.team_1, team2: data.team_2, matchSeed: Number(data.match_seed), combatSeed: Number(data.combat_seed), bonus1: data.bonus_1 ?? {}, bonus2: data.bonus_2 ?? {},
       status: data.match_status, winnerId: data.winner_id, score1: data.score_1, score2: data.score_2, ticks: data.duration_ticks }
   } catch { return null }
 }
@@ -204,13 +234,13 @@ export async function fetchReward(matchId: string): Promise<Reward | null> {
   } catch { return null }
 }
 
-export interface PracticeLaunch { matchId: string; team: string[]; robots: string[]; combatSeed: number; playerWon: boolean; coins: number; limited: boolean }
+export interface PracticeLaunch { matchId: string; team: string[]; robots: string[]; combatSeed: number; playerWon: boolean; coins: number; limited: boolean; bonus: TeamBonus }
 /** Asks the server to run a practice match: it picks the seed, simulates it and records the reward. null = could not be verified. */
 export async function practiceMatch(team: readonly string[]): Promise<PracticeLaunch | null> {
   if (!supabase || !profile) return null
   try {
     const { data, error } = await supabase.functions.invoke('practice-match', { body: { team, request_id: crypto.randomUUID() } })
     if (error || !data?.match_id) return null
-    return { matchId: data.match_id, team: data.team, robots: data.robot_team, combatSeed: data.combat_seed, playerWon: data.player_won, coins: data.coins, limited: data.limited }
+    return { matchId: data.match_id, team: data.team, robots: data.robot_team, combatSeed: data.combat_seed, playerWon: data.player_won, coins: data.coins, limited: data.limited, bonus: data.bonus ?? {} }
   } catch { return null }
 }

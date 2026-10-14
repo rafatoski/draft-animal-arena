@@ -21,7 +21,7 @@ export const HOME_ASSETS = {
   } as Record<HomeIcon, ImageReference>,
 }
 /** Decorative home illustrations in public/assets/home. Only files that exist at build time are used. */
-const HOME_ART = ['home-heroes', 'home-villains', 'chicken-vs-robot']
+const HOME_ART = ['home-heroes', 'home-villains', 'chicken-vs-robot', 'k9-platypus-duo']
 const present = new Set(Object.keys(import.meta.glob('/public/assets/home/*.png', { query: '?url', import: 'default' }))
   .map(path => path.split('/').pop()!.replace('.png', '')))
 const homeArt = HOME_ART.filter(name => present.has(name))

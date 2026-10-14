@@ -28,13 +28,17 @@ Deno.serve(async (req) => {
   if (team.length !== 3 || !UUID.test(requestId)) return json({ error: 'bad request' }, 400)
 
   const combatSeed = crypto.getRandomValues(new Uint32Array(1))[0]
-  let result
-  try { result = runOnlineMatch(team, ROBOT_IDS, combatSeed) } catch { return json({ error: 'invalid team' }, 400) }
   const admin = createClient(url, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!, { auth: { persistSession: false } })
+  // Purchased upgrades are read from the database for the authenticated user; the client never sends stats.
+  const bonusResult = await admin.rpc('team_bonus', { p_player: userData.user.id, p_team: team })
+  if (bonusResult.error) return json({ error: bonusResult.error.message }, 400)
+  const bonus = bonusResult.data ?? {}
+  let result
+  try { result = runOnlineMatch(team, ROBOT_IDS, combatSeed, { player: bonus }) } catch { return json({ error: 'invalid team' }, 400) }
   const { data, error } = await admin.rpc('record_practice_match', {
-    p_player: userData.user.id, p_request: requestId, p_team: team, p_robots: ROBOT_IDS, p_combat_seed: combatSeed, p_player_won: result.winner === 1,
+    p_player: userData.user.id, p_request: requestId, p_team: team, p_robots: ROBOT_IDS, p_combat_seed: combatSeed, p_player_won: result.winner === 1, p_bonus: bonus,
   })
   if (error) return json({ error: error.message }, error.code === '42501' ? 403 : 400)
   // A retried request returns the stored match, so the replay seed and the reward always agree.
-  return json({ match_id: data.id, team: data.team, robot_team: data.robot_team, combat_seed: Number(data.combat_seed), player_won: data.player_won, coins: data.coins, limited: data.limited })
+  return json({ match_id: data.id, team: data.team, robot_team: data.robot_team, combat_seed: Number(data.combat_seed), player_won: data.player_won, coins: data.coins, limited: data.limited, bonus: data.bonus })
 })

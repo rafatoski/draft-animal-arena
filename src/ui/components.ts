@@ -39,8 +39,8 @@ export function button(scene: Phaser.Scene, x: number, y: number, title: string,
 }
 export type IconGlyph = 'refresh' | 'prev' | 'next'
 /** Icon-only button, same face, height and press feel as `button`. `label` is the tooltip / accessible name (shown as the canvas title on hover). */
-export function iconButton(scene: Phaser.Scene, x: number, y: number, glyph: IconGlyph, label: string, action: () => void, options: { width?: number; color?: number } = {}) {
-  const width = options.width ?? 96, ink = PALETTE.ink
+export function iconButton(scene: Phaser.Scene, x: number, y: number, glyph: IconGlyph, label: string, action: () => void, options: { width?: number; height?: number; color?: number } = {}) {
+  const width = options.width ?? 96, height = options.height ?? 58, ink = PALETTE.ink
   const g = scene.add.graphics().lineStyle(6, ink).fillStyle(ink)
   if (glyph === 'prev' || glyph === 'next') {
     const d = glyph === 'prev' ? -1 : 1
@@ -49,8 +49,9 @@ export function iconButton(scene: Phaser.Scene, x: number, y: number, glyph: Ico
     g.beginPath().arc(0, 0, 13, Phaser.Math.DegToRad(-40), Phaser.Math.DegToRad(250), false).strokePath()
     g.fillTriangle(5, -22, 5, -4, 21, -13) // arrow head at the open end of the circle
   }
+  g.setScale(height / 58)
   const root = scene.add.container(x, y)
-  root.add([panel(scene, 0, 0, width, 58, options.color ?? PALETTE.mint), g]).setSize(width, 58).setInteractive({ useHandCursor: true })
+  root.add([panel(scene, 0, 0, width, height, options.color ?? PALETTE.mint), g]).setSize(width, height).setInteractive({ useHandCursor: true })
   let pressed = false, busy = false, enabled = true
   const canvas = scene.game.canvas
   root.on('pointerover', () => { canvas.title = label; if (enabled && !busy) scene.tweens.add({ targets: root, scale: 1.025, duration: 120 }) })

@@ -28,6 +28,7 @@ before(async () => {
   for (const file of readdirSync('supabase/migrations').sort()) await db.exec(readFileSync(`supabase/migrations/${file}`, 'utf8'))
   await db.exec(`insert into auth.users (id, is_anonymous) values ('${A}', false), ('${B}', false), ('${Z}', true);
     insert into auth.users (id, is_anonymous, raw_user_meta_data) values ('${C}', false, '{"full_name":"Casey Google","avatar_url":"https://x/y.png"}')`)
+  await db.exec('update public.player_progress set diamonds = 0') // the welcome diamond is tested on its own; zero it so the other tests count from nothing
   await unlockAll(A); await unlockAll(B) // these players stand in for people who already own every fighter
 })
 
@@ -107,7 +108,7 @@ test('team validation and ready rules', async () => {
 test('the fighter whitelist in SQL matches the game', () => {
   const source = readFileSync('src/game/fighters.ts', 'utf8')
   const ids = [...source.matchAll(/\{ id: '(\w+)', name:/g)].map(m => m[1]).filter(id => !id.startsWith('robot'))
-  const sql = readFileSync('supabase/migrations/20261014000001_online_foundation.sql', 'utf8').match(/array\[([^\]]+)\]/)[1]
+  const sql = readFileSync('supabase/migrations/20261014000008_new_fighters_prices.sql', 'utf8').match(/array\[([^\]]+)\]/)[1]
   assert.deepEqual(ids.sort(), sql.replace(/'/g, '').split(',').map(s => s.trim()).sort())
 })
 
@@ -140,8 +141,9 @@ test('results are paid exactly once, atomically, and cannot be forged by players
   await q(`select * from public.finalize_match('${match.match_id}', 2::smallint, 0, 2, 2, 500, '[]', 'zzz')`) // retry with a different claim: ignored
   const p = Object.fromEntries((await q('select * from public.player_progress where player_id in ($1, $2)', [A, B])).map(r => [r.player_id, r]))
   assert.ok(p[A].coins >= 1 && p[A].coins <= 3 && p[A].diamonds >= 1 && p[A].diamonds <= 2, 'winner: 1-3 coins, 1-2 diamonds')
-  assert.deepEqual([p[A].ranking_points, p[A].wins, p[A].losses, p[A].total_matches], [25, 1, 0, 1])
-  assert.deepEqual([p[B].coins, p[B].diamonds, p[B].ranking_points, p[B].wins, p[B].losses, p[B].total_matches], [0, 0, 0, 0, 1, 1]) // a defeat pays nothing
+  assert.deepEqual([p[A].wins, p[A].losses, p[A].total_matches], [1, 0, 1])
+  assert.deepEqual([p[A].ranking_points, p[B].ranking_points], [0, 0]) // the legacy points column is no longer written
+  assert.deepEqual([p[B].coins, p[B].diamonds, p[B].wins, p[B].losses, p[B].total_matches], [0, 0, 0, 1, 1]) // a defeat pays nothing
   assert.equal((await q('select count(*)::int n from public.reward_ledger'))[0].n, 2)
   assert.equal((await q('select count(*)::int n from public.match_events'))[0].n, 2)
   assert.equal((await q(`select status from public.multiplayer_rooms where id = '${room.id}'`))[0].status, 'finished')
@@ -149,13 +151,19 @@ test('results are paid exactly once, atomically, and cannot be forged by players
   await asUser(C); assert.equal((await q('select * from public.matches')).length, 0); assert.equal((await q('select * from public.match_events')).length, 0)
 })
 
-test('leaderboard is public, ranked, and only lists players who have played', async () => {
+test('leaderboard is public, lists every Google player (even with no matches), ranks by online results, never guests', async () => {
   await asUser(null, 'anon')
-  const rows = await q('select position, player, ranking_points, wins, losses, total_matches from public.leaderboard order by position')
-  assert.deepEqual(rows.map(r => [r.position, r.ranking_points, r.wins, r.losses]), [[1, 25, 1, 0], [2, 0, 0, 1]])
-  assert.equal(rows[0].player, 'Alpha')
+  const rows = await q('select position, player_id, player, wins, losses, total_matches, win_rate from public.leaderboard order by position')
+  const byId = Object.fromEntries(rows.map(r => [r.player_id, r]))
+  assert.deepEqual([byId[A].wins, byId[A].losses, byId[A].win_rate], [1, 0, 100]) // won the online match
+  assert.ok(byId[A].position < byId[B].position && byId[B].position < byId[Z]?.position || byId[A].position < byId[B].position) // more wins first
+  assert.deepEqual([byId[B].losses, byId[B].win_rate, byId[B].total_matches], [1, 0, 1])
+  assert.ok(byId[C] && byId[C].total_matches === 0, 'a Google player with no matches still appears') // the reported bug
+  assert.equal(byId[Z], undefined) // guest-type accounts never appear
+  assert.equal(byId[A].player, 'Alpha')
+  assert.ok(rows.every((r, i) => i === 0 || r.position >= rows[i - 1].position)) // ordered
   const cols = (await q("select column_name from information_schema.columns where table_name = 'leaderboard'")).map(r => r.column_name).sort()
-  assert.deepEqual(cols, ['losses', 'player', 'player_id', 'position', 'ranking_points', 'total_matches', 'wins']) // no coins, no xp, no account type
+  assert.deepEqual(cols, ['losses', 'player', 'player_id', 'position', 'total_matches', 'win_rate', 'wins']) // no coins, no diamonds, no account type
   await fails('select * from public.player_progress', /permission denied/)
 })
 
@@ -183,7 +191,7 @@ test('stale-room and old-event cleanup is service-only', async () => {
 
 test('end to end: two players, server simulation, both clients replay the same result, one payout', async () => {
   const D = '00000000-0000-4000-8000-0000000000d1', E = '00000000-0000-4000-8000-0000000000e1'
-  await db.exec(`reset role; insert into auth.users (id, is_anonymous) values ('${D}', false), ('${E}', false)`); await unlockAll(D); await unlockAll(E)
+  await db.exec(`reset role; insert into auth.users (id, is_anonymous) values ('${D}', false), ('${E}', false)`); await unlockAll(D); await unlockAll(E); await db.exec(`update public.player_progress set diamonds = 0 where player_id in ('${D}', '${E}')`)
   await asUser(D); const r = (await q('select * from public.create_room()'))[0]
   await asUser(E); await db.query(`select * from public.join_room('${r.room_code}')`)
   await asUser(D); await db.query(`select public.set_team('${r.id}', '{raccoon,pig,frog}')`); await db.query(`select public.set_ready('${r.id}', true)`)
@@ -229,7 +237,7 @@ test('economy: starters are unlocked, the other three are locked, and nobody can
 
 test('economy: locked fighters cannot be used in a room team, and diamonds buy them atomically', async () => {
   const F = '00000000-0000-4000-8000-0000000000f1', G = '00000000-0000-4000-8000-0000000000f2'
-  await db.exec(`reset role; insert into auth.users (id, is_anonymous) values ('${F}', false), ('${G}', false)`)
+  await db.exec(`reset role; insert into auth.users (id, is_anonymous) values ('${F}', false), ('${G}', false); update public.player_progress set diamonds = 0 where player_id in ('${F}', '${G}')`)
   await asUser(F); const r = (await q('select * from public.create_room()'))[0]
   await asUser(G); await db.query(`select * from public.join_room('${r.room_code}')`)
   await asUser(F); await fails(`select public.set_team('${r.id}', '{chicken,capybara,pig}')`, /fighter not unlocked/)
@@ -244,7 +252,7 @@ test('economy: locked fighters cannot be used in a room team, and diamonds buy t
   await fails(`select public.unlock_fighter('pig')`, /already unlocked/)                       // no double purchase
   await fails(`select public.unlock_fighter('fox')`, /not enough diamonds: need 8 more/)       // 2 left: balance never goes negative
   await db.query(`select public.set_team('${r.id}', '{chicken,capybara,pig}')`)                // now usable
-  const rows = await q(`select currency, amount, transaction_type, reference_id from public.economy_transactions`)
+  const rows = await q(`select currency, amount, transaction_type, reference_id from public.economy_transactions where transaction_type = 'fighter_unlock'`)
   assert.deepEqual(rows, [{ currency: 'diamonds', amount: -10, transaction_type: 'fighter_unlock', reference_id: 'pig' }])
   await asUser(G); await fails(`select public.set_team('${r.id}', '{chicken,capybara,fox}')`, /fighter not unlocked/)
   assert.equal((await q(`select diamonds from public.player_progress`))[0].diamonds, 0)         // G sees only G
@@ -260,8 +268,8 @@ test('economy: a team with a fighter that is no longer owned cannot start a matc
   await asService(); await fails(`select * from public.begin_match('${r.id}', '${H}')`, /fighter not unlocked/)
 })
 
-const practice = (player, request, team, won) => q('select * from public.record_practice_match($1, $2, $3::text[], $4::text[], $5, $6)', [player, request, team, ['robot1', 'robot2', 'robot3'], 123456, won])
-const progress = async (id) => (await q('select coins, diamonds, ranking_points, wins, losses, total_matches from public.player_progress where player_id = $1', [id]))[0]
+const practice = (player, request, team, won) => q('select * from public.record_practice_match($1, $2, $3::text[], $4::text[], $5, $6, $7::jsonb)', [player, request, team, ['robot1', 'robot2', 'robot3'], 123456, won, '{}'])
+const progress = async (id) => (await q('select coins, diamonds, wins, losses, total_matches from public.player_progress where player_id = $1', [id]))[0]
 const rewind = () => db.exec(`reset role; update public.practice_matches set created_at = created_at - interval '1 minute'`)
 const T = ['chicken', 'capybara', 'frog']
 let nextRequest = 0
@@ -273,7 +281,7 @@ test('practice rewards: a win pays 1-3 coins and never diamonds, ranking or onli
   assert.ok(won.coins >= 1 && won.coins <= 3 && !won.limited)
   const after = await progress(A)
   assert.equal(after.coins - before.coins, won.coins)
-  assert.deepEqual([after.diamonds, after.ranking_points, after.wins, after.losses, after.total_matches], [before.diamonds, before.ranking_points, before.wins, before.losses, before.total_matches])
+  assert.deepEqual([after.diamonds, after.wins, after.losses, after.total_matches], [before.diamonds, before.wins, before.losses, before.total_matches])
   await rewind()
   const lost = (await practice(A, req(), T, false))[0]
   assert.equal(lost.coins, 0); assert.deepEqual(await progress(A), after)
@@ -301,10 +309,10 @@ test('practice rewards: a retried request id never pays twice; rapid new request
 
 test('practice rewards: guests, locked fighters and the public API are rejected', async () => {
   await asService()
-  await fails(`select * from public.record_practice_match('${Z}', gen_random_uuid(), '{chicken,capybara,frog}', '{robot1,robot2,robot3}', 1, true)`, /sign in with Google/)
-  await fails(`select * from public.record_practice_match('${C}', gen_random_uuid(), '{chicken,capybara,pig}', '{robot1,robot2,robot3}', 1, true)`, /invalid team/)
-  await fails(`select * from public.record_practice_match('${C}', gen_random_uuid(), '{chicken,chicken,frog}', '{robot1,robot2,robot3}', 1, true)`, /invalid team/)
-  await asUser(C); await fails(`select * from public.record_practice_match('${C}', gen_random_uuid(), '{chicken,capybara,frog}', '{robot1,robot2,robot3}', 1, true)`, /permission denied/)
+  await fails(`select * from public.record_practice_match('${Z}', gen_random_uuid(), '{chicken,capybara,frog}', '{robot1,robot2,robot3}', 1, true, '{}')`, /sign in with Google/)
+  await fails(`select * from public.record_practice_match('${C}', gen_random_uuid(), '{chicken,capybara,pig}', '{robot1,robot2,robot3}', 1, true, '{}')`, /invalid team/)
+  await fails(`select * from public.record_practice_match('${C}', gen_random_uuid(), '{chicken,chicken,frog}', '{robot1,robot2,robot3}', 1, true, '{}')`, /invalid team/)
+  await asUser(C); await fails(`select * from public.record_practice_match('${C}', gen_random_uuid(), '{chicken,capybara,frog}', '{robot1,robot2,robot3}', 1, true, '{}')`, /permission denied/)
   await fails(`insert into public.practice_matches (player_id, request_id, team, robot_team, combat_seed, player_won, coins) values ('${C}', gen_random_uuid(), '{a}', '{b}', 1, true, 3)`, /permission denied/)
   await fails(`update public.player_progress set coins = coins + 3 where player_id = '${C}'`, /permission denied/)
   assert.ok((await q('select * from public.practice_matches')).every(r => r.player_id === C)) // own rows only
@@ -369,4 +377,106 @@ test('selection deadline: set by the server clock, final selection is server-val
   assert.ok(seats.every(s => s.ready)); assert.ok(seats.every(s => mine[s.player_id].team_selection.length === 3))
   const m = (await q(`select * from public.begin_match('${r.id}', '${S1}')`))[0] // both ready and validated: the match can start
   assert.equal(m.created, true)
+})
+
+// ───────────────────────── upgrades and the points-free leaderboard ─────────────────────────
+const upgrade = (fighter, stat, level) => q('select public.upgrade_fighter($1, $2, $3) r', [fighter, stat, level]).then(r => r[0].r)
+const coinsOf = async (id) => (await q('select coins from public.player_progress where player_id = $1', [id]))[0].coins
+const setCoins = (id, n) => db.exec(`reset role; update public.player_progress set coins = ${n} where player_id = '${id}'`)
+const U1 = '40000000-0000-4000-8000-000000000001', U2 = '40000000-0000-4000-8000-000000000002'
+
+test('upgrades: cost 5 x 2^level, +5 to exactly the chosen stat, independent per fighter, atomic and idempotent', async () => {
+  await db.exec(`reset role; insert into auth.users (id, is_anonymous) values ('${U1}', false), ('${U2}', false)`); await setCoins(U1, 100)
+  await asUser(U1)
+  const first = await upgrade('chicken', 'attack', 0)
+  assert.deepEqual([first.coins, first.level, first.cost, first.next_cost], [95, 1, 5, 10])          // 1st upgrade: 5 coins, next costs 10
+  assert.deepEqual([(await upgrade('chicken', 'attack', 1)).cost, (await upgrade('chicken', 'attack', 2)).cost], [10, 20]) // 10 then 20
+  assert.equal(await coinsOf(U1), 65)                                                                    // 100 - 5 - 10 - 20
+  await fails(`select public.upgrade_fighter('chicken', 'attack', 2)`, /upgrade level changed/)          // a repeated request is not charged twice
+  assert.equal(await coinsOf(U1), 65)
+  await asService()
+  assert.deepEqual((await q(`select team_bonus('${U1}', '{chicken,capybara,frog}') b`))[0].b, {
+    chicken: { attack: 15, defense: 0, speed: 0 }, capybara: { attack: 0, defense: 0, speed: 0 }, frog: { attack: 0, defense: 0, speed: 0 } }) // only Attack on Chicken moved: +5 x 3
+  const rows = await q(`select currency, amount, transaction_type, reference_id from public.economy_transactions where player_id = '${U1}' and transaction_type = 'fighter_upgrade' order by amount desc`)
+  assert.deepEqual(rows.map(r => [r.amount, r.reference_id]), [[-5, 'chicken:attack:1'], [-10, 'chicken:attack:2'], [-20, 'chicken:attack:3']])
+  await asUser(U1); await upgrade('chicken', 'defense', 0); await upgrade('capybara', 'speed', 0) // other stats / other fighters have their own levels
+  await asService(); const b = (await q(`select team_bonus('${U1}', '{chicken,capybara,frog}') b`))[0].b
+  assert.deepEqual([b.chicken, b.capybara], [{ attack: 15, defense: 5, speed: 0 }, { attack: 0, defense: 0, speed: 5 }])
+})
+
+test('upgrades: not enough coins, locked fighters, guests and bad input are refused and change nothing', async () => {
+  await setCoins(U1, 3); await asUser(U1)
+  await fails(`select public.upgrade_fighter('frog', 'speed', 0)`, /not enough coins: need 2 more/)
+  assert.equal(await coinsOf(U1), 3)                                                                     // never negative, never partially charged
+  await fails(`select public.upgrade_fighter('pig', 'attack', 0)`, /fighter not unlocked/)                // locked fighters cannot be upgraded
+  await fails(`select public.upgrade_fighter('dragon', 'attack', 0)`, /unknown fighter/)
+  await fails(`select public.upgrade_fighter('frog', 'health', 0)`, /unknown stat/)
+  await asUser(Z); await fails(`select public.upgrade_fighter('chicken', 'attack', 0)`, /sign in with Google/)
+  await asUser(null, 'anon'); await fails(`select public.upgrade_fighter('chicken', 'attack', 0)`, /permission denied/)
+  await db.exec(`reset role; update public.player_progress set coins = 1000000 where player_id = '${U2}'`); await asUser(U2)
+  for (let lvl = 0; lvl < 6; lvl++) await upgrade('capybara', 'defense', lvl)
+  assert.equal(await coinsOf(U2), 1000000 - 5 * (2 ** 6 - 1))                                            // 5+10+20+40+80+160
+})
+
+test('upgrades: RLS blocks direct writes and other players cannot read or use someone else\'s upgrades', async () => {
+  await asUser(U1)
+  await fails(`update public.fighter_upgrades set level = 99 where player_id = '${U1}'`, /permission denied/)
+  await fails(`insert into public.fighter_upgrades (player_id, fighter_id, stat, level) values ('${U1}', 'frog', 'attack', 9)`, /permission denied/)
+  await fails(`select public.team_bonus('${U1}', '{chicken,capybara,frog}')`, /permission denied/)
+  assert.ok((await q('select * from public.fighter_upgrades')).every(r => r.player_id === U1))           // own rows only
+  await asUser(null, 'anon'); await fails('select * from public.fighter_upgrades', /permission denied/)
+  await asUser(C); assert.equal((await q('select * from public.fighter_upgrades')).length, 0)
+})
+
+test('upgrades reach online combat: the server snapshots both players\' bonuses and every client replays the same match', async () => {
+  await setCoins(U1, 500); await setCoins(U2, 500); await asUser(U1); await upgrade('frog', 'attack', 0); await upgrade('frog', 'attack', 1)
+  await asUser(U2); await upgrade('chicken', 'speed', 0)
+  await asUser(U1); const r = (await q('select * from public.create_room()'))[0]
+  await asUser(U2); await db.query(`select * from public.join_room('${r.room_code}')`)
+  await asUser(U1); await db.query(`select public.set_team('${r.id}', '{chicken,capybara,frog}')`); await db.query(`select public.set_ready('${r.id}', true)`)
+  await asUser(U2); await db.query(`select public.set_team('${r.id}', '{chicken,fox,capybara}')`).catch(() => {}); await db.query(`select public.set_team('${r.id}', '{chicken,capybara,frog}')`); await db.query(`select public.set_ready('${r.id}', true)`)
+  await asService()
+  const m = (await q(`select * from public.begin_match('${r.id}', '${U1}')`))[0]
+  assert.equal(m.bonus_1.frog.attack, 10); assert.equal(m.bonus_2.chicken.speed, 5); assert.equal(m.bonus_2.frog.attack, 0)
+  const server = runOnlineMatch(m.team_1, m.team_2, Number(m.combat_seed), { player: m.bonus_1, ai: m.bonus_2 })
+  await db.query('select * from public.finalize_match($1, $2::smallint, $3, $4, $5, $6, $7::jsonb, $8)', [m.match_id, server.winner, server.score[0], server.score[1], server.rounds, server.ticks, '[]', server.hash])
+  for (const id of [U1, U2]) { // each browser reads the stored snapshot and replays it
+    await asUser(id); const row = (await q('select * from public.matches where id = $1', [m.match_id]))[0]
+    assert.equal(runOnlineMatch(row.team_1, row.team_2, Number(row.combat_seed), { player: row.bonus_1, ai: row.bonus_2 }).hash, row.result_hash)
+  }
+})
+
+test('leaderboard ranks by wins (most first) then losses (fewest first), never by points; practice does not count', async () => {
+  const ids = [1, 2, 3, 4, 5, 6].map(n => `50000000-0000-4000-8000-00000000000${n}`)
+  await db.exec(`reset role; insert into auth.users (id, is_anonymous) values ${ids.map(id => `('${id}', false)`).join(', ')}`)
+  const records = [[20, 5], [20, 12], [15, 2], [16, 20], [0, 0], [0, 0]]
+  for (const [i, [w, l]] of records.entries()) await db.exec(`update public.player_progress set wins = ${w}, losses = ${l}, total_matches = ${w + l}, ranking_points = ${(5 - i) * 1000} where player_id = '${ids[i]}'`) // points set against the order on purpose
+  await asUser(null, 'anon')
+  const rows = (await q('select * from public.leaderboard')).filter(r => ids.includes(r.player_id)).sort((a, b) => a.position - b.position)
+  assert.deepEqual(rows.map(r => ids.indexOf(r.player_id)), [0, 1, 3, 2, 4, 5])  // 20-5, 20-12, 16-20, 15-2, then the two zero-match players by id
+  assert.deepEqual(rows.map(r => r.win_rate), [80, 63, 44, 88, 0, 0])               // wins / (wins + losses); 0% with no matches
+  assert.deepEqual([...new Set((await q('select position from public.leaderboard')).map(r => r.position))].length, (await q('select position from public.leaderboard')).length) // positions are unique (deterministic tie-break)
+  await asService(); const before = await q('select position, player_id from public.leaderboard order by position')
+  await db.query(`select * from public.record_practice_match('${ids[4]}', gen_random_uuid(), '{chicken,capybara,frog}', '{robot1,robot2,robot3}', 1, true, '{}')`)
+  assert.deepEqual(await q('select position, player_id from public.leaderboard order by position'), before) // a practice win changes no ranking
+})
+
+test('new Google accounts start with 1 free diamond (ledgered once); guests never do; unlock prices are per fighter', async () => {
+  const N1 = '60000000-0000-4000-8000-000000000001', N2 = '60000000-0000-4000-8000-000000000002'
+  await db.exec(`reset role; insert into auth.users (id, is_anonymous) values ('${N1}', false), ('${N2}', true)`)
+  assert.deepEqual((await q(`select player_id, diamonds from public.player_progress where player_id in ('${N1}', '${N2}') order by player_id`)).map(r => r.diamonds), [1, 0])
+  assert.deepEqual((await q(`select currency, amount, transaction_type from public.economy_transactions where player_id = '${N1}'`)), [{ currency: 'diamonds', amount: 1, transaction_type: 'welcome_bonus' }])
+  assert.equal((await q(`select count(*)::int n from public.economy_transactions where player_id = '${N2}'`))[0].n, 0)
+  await asUser(N1)
+  await fails(`select public.unlock_fighter('raccoon')`, /not enough diamonds: need 4 more/)  // raccoon costs 5
+  await fails(`select public.unlock_fighter('k9')`, /not enough diamonds: need 14 more/)       // K9 Enforcer 15
+  await fails(`select public.unlock_fighter('platypus')`, /not enough diamonds: need 14 more/) // Agent Platypus 15
+  await fails(`select public.unlock_fighter('pig')`, /not enough diamonds: need 9 more/)       // unchanged default 10
+  await db.exec(`reset role; update public.player_progress set diamonds = 30 where player_id = '${N1}'`); await asUser(N1)
+  assert.equal((await q(`select public.unlock_fighter('raccoon') r`))[0].r.diamonds, 25)
+  assert.equal((await q(`select public.unlock_fighter('k9') r`))[0].r.diamonds, 10)
+  await fails(`select public.unlock_fighter('platypus')`, /not enough diamonds: need 5 more/)
+  await db.exec(`reset role; update public.player_progress set diamonds = 15 where player_id = '${N1}'`); await asUser(N1)
+  assert.equal((await q(`select public.unlock_fighter('platypus') r`))[0].r.diamonds, 0)
+  await fails(`select public.upgrade_fighter('platypus', 'attack', 0)`, /not enough coins/) // owning him allows upgrades (no coins yet); a locked fighter said 'not unlocked' before
 })

@@ -1,5 +1,8 @@
 import Phaser from 'phaser'
 import type { SpriteKit } from './spriteKit'
+import type { AbilityId } from './abilities'
+import { ABILITY_SHEET, SHEET_FRAMES, K9_LAYOUT, PLATYPUS_LAYOUT } from './sheetLayouts'
+import type { AbilityLayout } from './sheetLayouts'
 
 /**
  * Shared layout for the animal spritesheets (public/assets/sprites/<name>/<name>-spritesheet.png):
@@ -60,3 +63,35 @@ export const foxKit = animalSheetKit('fox', 'archer-fox', { rates: { 'walk-back'
 export const capybaraKit = animalSheetKit('capybara', 'tank-capybara', {
   rates: { 'walk-back': 7, 'walk-front': 7, attack: 10, hit: 9, death: 6 }, scale: .43, feet: 232,
 })
+
+/** Fighters with active abilities (K9 Enforcer, Agent Platypus): 1536x3072 sheets of 256px cells, clips from sheetLayouts.ts. */
+function abilitySheetKit(name: string, texture: string, layout: AbilityLayout, abilities: readonly AbilityId[]): SpriteKit {
+  const key = (clip: string) => `${name}-${clip}`
+  const ensure = (scene: Phaser.Scene) => {
+    const tex = scene.textures.get(texture), image = tex.getSourceImage()
+    if (image.width !== ABILITY_SHEET.width || image.height !== ABILITY_SHEET.height || tex.frameTotal - 1 !== SHEET_FRAMES) {
+      throw new Error(`${name} sheet must be ${ABILITY_SHEET.width}×${ABILITY_SHEET.height} (${SHEET_FRAMES} frames); got ${image.width}×${image.height} (${tex.frameTotal - 1})`)
+    }
+    for (const [clip, def] of Object.entries(layout.clips)) {
+      if (scene.anims.exists(key(clip))) continue
+      scene.anims.create({ key: key(clip), frameRate: def.rate, repeat: def.loop ? -1 : 0, frames: def.frames.map(frame => ({ key: texture, frame })) })
+    }
+  }
+  return {
+    anims: { idle: key('idle'), attack: key('strike'), hit: key('hit'), death: key('death'), stun: key('stun'), abilities: Object.fromEntries(abilities.map(a => [a, key(a)])) },
+    walk: (dx, dy) => Math.abs(dy) > Math.abs(dx) ? key(dy < 0 ? 'walkUp' : 'walkDown') : key(dx < 0 ? 'walkLeft' : 'walkRight'),
+    flip: dx => dx < 0, // attack art faces right
+    walkFlip: dx => layout.mirrorLeft && dx < 0,
+    preload(scene) {
+      if (!scene.textures.exists(texture)) scene.load.spritesheet(texture, `${import.meta.env.BASE_URL}assets/sprites/${name}/${name}-spritesheet.png`, { frameWidth: ABILITY_SHEET.cell, frameHeight: ABILITY_SHEET.cell })
+    },
+    create(scene) {
+      ensure(scene)
+      const sprite = scene.add.sprite(0, 26, texture).setOrigin(.5, layout.feet / ABILITY_SHEET.cell).setScale(layout.scale)
+      sprite.play({ key: key('idle'), startFrame: Phaser.Math.Between(0, 3) })
+      return sprite
+    },
+  }
+}
+export const k9Kit = abilitySheetKit('k9', 'k9-enforcer', K9_LAYOUT, ['rush', 'bite', 'codered'])
+export const platypusKit = abilitySheetKit('platypus', 'agent-platypus', PLATYPUS_LAYOUT, ['cloak', 'venom', 'blackout'])

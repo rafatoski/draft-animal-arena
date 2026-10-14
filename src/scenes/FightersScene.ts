@@ -6,9 +6,13 @@ import type { FighterDefinition } from '../game/fighters'
 import { collectibleCard, preloadCardArt } from '../ui/collectibleCard'
 import { cardSlots } from '../ui/cardLayout'
 import { audio } from '../services/audio'
-import { getProfile, isUnlocked, unlockFighter } from '../services/online'
+import { getProfile, isUnlocked, unlockFighter, upgradeFighter } from '../services/online'
+import { homeIcon } from '../ui/homeNavigation'
+import { UPGRADE, UPGRADE_STATS, noLevels, upgradeCost, upgradedStat } from '../game/upgrades'
+import type { UpgradeStat } from '../game/upgrades'
+import type { TextKey } from '../services/i18n'
 import { lockOverlay } from '../ui/lockOverlay'
-import { ECONOMY } from '../game/economy'
+import { priceOf } from '../game/economy'
 
 const CARD_WIDTH = 220, GAP = 12, TOP = 140, BOTTOM = 706 // scroll viewport, design pixels (480×840)
 export class FightersScene extends Phaser.Scene {
@@ -27,7 +31,7 @@ export class FightersScene extends Phaser.Scene {
     this.content = this.add.container(0, 0)
     FIGHTERS.forEach((fighter, i) => {
       const card = collectibleCard(this, fighter, CARD_WIDTH)
-      if (!isUnlocked(fighter.id)) card.add(lockOverlay(this, CARD_WIDTH, cardHeight, 22, ECONOMY.unlockPriceDiamonds))
+      if (!isUnlocked(fighter.id)) card.add(lockOverlay(this, CARD_WIDTH, cardHeight, 22, priceOf(fighter.id)))
       card.setPosition(240 + (i % 2 ? 1 : -1) * (CARD_WIDTH + GAP) / 2, TOP + 8 + cardHeight / 2 + Math.floor(i / 2) * (cardHeight + GAP))
         .setInteractive({ useHandCursor: true })
       card.on('pointerup', (pointer: Phaser.Input.Pointer) => {
@@ -76,7 +80,7 @@ export class FightersScene extends Phaser.Scene {
   /** Locked fighter: price, balance and the purchase. The server does the real checks; this only asks and reports. */
   private showUnlock(fighter: FighterDefinition) {
     audio.effect('tap')
-    const profile = getProfile(), price = ECONOMY.unlockPriceDiamonds
+    const profile = getProfile(), price = priceOf(fighter.id)
     let note = profile ? '' : t('unlockSignIn'), working = false
     const close = () => { this.details?.destroy(); this.details = undefined }
     const draw = () => {
@@ -105,20 +109,55 @@ export class FightersScene extends Phaser.Scene {
     }
     draw()
   }
-  /** Health, crit, role and the rest stay reachable here instead of crowding the card. */
+  /** Detail view with the permanent upgrades. Prices and the purchase belong to the server; this shows what it says and asks. */
   private showDetails(fighter: FighterDefinition) {
     audio.effect('tap')
+    let note = '', noteColor = '#ffb9a8', working = false
     const close = () => { this.details?.destroy(); this.details = undefined }
-    const dim = this.add.rectangle(240, 420, 480, 840, 0x102f38, .72).setInteractive()
-    dim.on('pointerup', close)
-    const rows: [string, string | number][] = [[t('hp'), fighter.health], [t('atk'), fighter.attack], [t('def'), fighter.defense],
-      [t('spd'), fighter.speed], [t('crit'), `${Math.round(fighter.crit * 100)}%`]]
-    const view = this.add.container(0, 0, [dim, panel(this, 240, 400, 380, 400),
-      text(this, 240, 240, fighterName(fighter.id), 30), text(this, 240, 282, fighterRole(fighter.id), 14, '#43766c'),
-      ...rows.flatMap(([label, value], i) => [text(this, 150, 342 + i * 40, label, 20, '#597773').setOrigin(0, .5),
-        text(this, 330, 342 + i * 40, String(value), 22).setOrigin(1, .5)]),
-      button(this, 240, 576, t('detailsClose'), close, { width: 220, color: PALETTE.yellow })]).setDepth(100)
-    this.details = view
-    view.setAlpha(0); this.tweens.add({ targets: view, alpha: 1, duration: 140 })
+    const draw = () => {
+      this.details?.destroy()
+      const profile = getProfile(), levels = profile?.upgrades[fighter.id] ?? noLevels(), coins = profile?.coins ?? 0
+      const dim = this.add.rectangle(240, 420, 480, 840, 0x102f38, .72).setInteractive()
+      dim.on('pointerup', close)
+      const parts: Phaser.GameObjects.GameObject[] = [dim, panel(this, 240, 410, 420, 600, 0x4a2c8a),
+        text(this, 240, 138, fighterName(fighter.id), 28, '#fff4d9').setStroke('#173f46', 5),
+        text(this, 240, 170, `${fighterRole(fighter.id)}  •  ${t('hp')} ${fighter.health}  •  ${t('crit')} ${Math.round(fighter.crit * 100)}%`, 12, '#d9ccff')]
+      if (profile) {
+        const balance = text(this, 250, 204, `${t('yourCoins')}: ${coins}`, 17, '#ffd367').setStroke('#173f46', 4)
+        parts.push(balance, homeIcon(this, 'coin').setScale(.7).setPosition(250 - balance.width / 2 - 20, 204))
+      } else parts.push(text(this, 240, 204, t('upgradeSignIn'), 13, '#ffb9a8').setWordWrapWidth(380))
+      UPGRADE_STATS.forEach((stat, i) => {
+        const y = 290 + i * 118, base = fighter[stat], level = levels[stat], maxed = level >= UPGRADE.maxLevel, cost = upgradeCost(level)
+        const can = !!profile && !maxed && coins >= cost && !working
+        parts.push(panel(this, 240, y, 390, 104, 0x3a2270),
+          text(this, 62, y - 30, t(`${stat}Label` as TextKey), 15, '#d9ccff').setOrigin(0, .5),
+          text(this, 62, y, maxed ? String(upgradedStat(base, level)) : `${upgradedStat(base, level)} → ${upgradedStat(base, level + 1)}`, 26, '#fff4d9').setOrigin(0, .5).setStroke('#173f46', 4),
+          text(this, 62, y + 32, t('upgradeLv', { n: level }), 12, '#d9ccff').setOrigin(0, .5))
+        if (!maxed) {
+          const price = text(this, 345, y - 36, String(cost), 17, coins >= cost ? '#ffd367' : '#ff8c79').setStroke('#173f46', 4)
+          parts.push(price, homeIcon(this, 'coin').setScale(.55).setPosition(345 - price.width / 2 - 16, y - 36))
+        }
+        const buy = button(this, 345, y + 8, maxed ? t('upgradeMax') : t('upgradeBtn'), () => void upgrade(stat, level), { width: 124, size: 17, color: can ? PALETTE.mint : 0xd7dbcf })
+        buy.setAlpha(can || maxed ? 1 : .5); parts.push(buy)
+      })
+      if (note) parts.push(text(this, 240, 618, note, 14, noteColor).setWordWrapWidth(380))
+      parts.push(button(this, 240, 668, t('detailsClose'), close, { width: 220, size: 17, color: PALETTE.yellow }))
+      this.details = this.add.container(0, 0, parts).setDepth(100)
+    }
+    const upgrade = async (stat: UpgradeStat, level: number) => {
+      const profile = getProfile()
+      if (working) return
+      if (!profile) { note = t('upgradeSignIn'); noteColor = '#ffb9a8'; return draw() }
+      const cost = upgradeCost(level)
+      if (profile.coins < cost) { note = t('upgradeNeed', { n: cost - profile.coins }); noteColor = '#ffb9a8'; return draw() }
+      working = true; note = t('working'); noteColor = '#d9ccff'; draw()
+      const result = await upgradeFighter(fighter.id, stat, level) // the server prices it and checks everything again
+      working = false
+      if (result.ok) { audio.effect('win'); note = t('upgradeDone', { stat: t(`${stat}Label` as TextKey) }); noteColor = '#b9ee96' }
+      else { noteColor = '#ffb9a8'; note = result.reason === 'not-enough' ? t('upgradeNeed', { n: result.missing ?? cost }) : result.reason === 'changed' ? t('upgradeChanged') : result.reason === 'signed-out' ? t('upgradeSignIn') : t('upgradeFailed') }
+      draw()
+    }
+    draw()
+    this.details!.setAlpha(0); this.tweens.add({ targets: this.details, alpha: 1, duration: 140 })
   }
 }

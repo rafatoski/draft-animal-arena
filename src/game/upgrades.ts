@@ -1,0 +1,19 @@
+export const UPGRADE_STATS = ['attack', 'defense', 'speed'] as const
+export type UpgradeStat = typeof UPGRADE_STATS[number]
+/** Stat bonus in POINTS for one fighter. Missing stats count as 0. */
+export type StatBonus = Partial<Record<UpgradeStat, number>>
+export type TeamBonus = Record<string, StatBonus>
+/** Purchased levels for one fighter. */
+export type StatLevels = Record<UpgradeStat, number>
+
+/** Client mirror of public.economy_config.upgrade; the server (upgrade_fighter) is the only authority on prices. tests/economy.test.mjs keeps them equal. */
+export const UPGRADE = { step: 5, baseCost: 5, maxLevel: 20 }
+/** upgrade_cost = 5 x 2^current_level */
+export const upgradeCost = (level: number) => UPGRADE.baseCost * 2 ** level
+/** upgraded_stat = base_stat + level x 5 */
+export const upgradedStat = (base: number, level: number) => base + level * UPGRADE.step
+export const noLevels = (): StatLevels => ({ attack: 0, defense: 0, speed: 0 })
+/** Levels -> the bonus map the combat engine takes. */
+export function bonusFromLevels(levels: Record<string, StatLevels>): TeamBonus {
+  return Object.fromEntries(Object.entries(levels).map(([id, l]) => [id, Object.fromEntries(UPGRADE_STATS.map(s => [s, l[s] * UPGRADE.step]))]))
+}

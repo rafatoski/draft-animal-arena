@@ -18,9 +18,9 @@ export class LeaderboardScene extends Phaser.Scene {
     this.input.enabled = true; this.page = 0
     background(this); entrance(this); heading(this, t('leaderboard'), t('lbHead'))
     this.rows = this.add.container(0, 0)
-    this.prev = iconButton(this, 100, 712, 'prev', t('lbPrev'), () => this.go(-1), { width: 150 })
-    iconButton(this, 240, 712, 'refresh', t('lbRefresh'), () => this.fetchPage(), { width: 150, color: PALETTE.yellow })
-    this.next = iconButton(this, 380, 712, 'next', t('lbNext'), () => this.go(1), { width: 150 })
+    this.prev = iconButton(this, 168, 712, 'prev', t('lbPrev'), () => this.go(-1), { width: 70, height: 48 })
+    iconButton(this, 240, 712, 'refresh', t('lbRefresh'), () => this.fetchPage(), { width: 70, height: 48, color: PALETTE.yellow })
+    this.next = iconButton(this, 312, 712, 'next', t('lbNext'), () => this.go(1), { width: 70, height: 48 })
     this.prev.setEnabled(false); this.next.setEnabled(false)
     button(this, 240, 780, `‹  ${t('back')}`, () => navigate(this, 'Menu'), { color: PALETTE.cream, width: 280 })
     void refreshProfile().finally(() => this.fetchPage())
@@ -45,10 +45,10 @@ export class LeaderboardScene extends Phaser.Scene {
       const bg = this.add.graphics().fillStyle(mineRow ? 0xffd367 : 0x4a2c8a, mineRow ? 1 : .85).fillRoundedRect(24, y - 22, 432, 46, 14)
         .lineStyle(3, mineRow ? 0x173f46 : 0x2b1a55).strokeRoundedRect(24, y - 22, 432, 46, 14)
       const ink = mineRow ? '#173f46' : '#fff4d9'
-      const name = text(this, 80, y, mineRow ? `${r.player}  (${t('lbYou')})` : r.player, 17, ink).setOrigin(0, .5)
-      if (name.width > 200) name.setScale(200 / name.width)
+      const name = text(this, 76, y, mineRow ? `${r.player}  (${t('lbYou')})` : r.player, 17, ink).setOrigin(0, .5)
+      if (name.width > 170) name.setScale(170 / name.width)
       this.rows.add([bg, text(this, 52, y, String(r.position), 20, ink), name,
-        text(this, 340, y, String(r.rankingPoints), 19, ink), text(this, 412, y, `${r.wins}/${r.losses}`, 15, ink)])
+        text(this, 292, y, String(r.wins), 19, ink), text(this, 346, y, String(r.losses), 19, ink), text(this, 416, y, `${r.winRate}%`, 17, ink)])
     })
     if (note) this.rows.add(text(this, 240, 360, note, 18, '#fff4d9').setWordWrapWidth(380).setLineSpacing(8))
   }

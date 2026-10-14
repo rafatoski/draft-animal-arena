@@ -2,6 +2,7 @@
 import { CombatSimulation } from '../simulation/combat.ts'
 import type { CombatEvent, Winner } from '../simulation/combat.ts'
 import { newSeries, recordRound, roundSeed } from './series.ts'
+import type { TeamBonus } from './upgrades.ts'
 
 export interface RoundLog { round: number; winner: Winner; ticks: number; events: CombatEvent[] }
 export interface OnlineResult {
@@ -26,13 +27,13 @@ function fnv(text: string) {
  * (series.ts rules, roundSeed per attempt, a drawn round is void and replayed with the next seed).
  * Team 1 is the simulation's 'player' side, team 2 its 'ai' side.
  */
-export function runOnlineMatch(team1: readonly string[], team2: readonly string[], combatSeed: number): OnlineResult {
+export function runOnlineMatch(team1: readonly string[], team2: readonly string[], combatSeed: number, bonus: { player?: TeamBonus; ai?: TeamBonus } = {}): OnlineResult {
   let series = newSeries()
   const log: RoundLog[] = []
   let ticks = 0
   for (let guard = 0; series.winner === null; guard++) {
     if (guard > 30) throw new Error('match did not converge')
-    const sim = new CombatSimulation(team1, team2, roundSeed(combatSeed >>> 0, series.attempt))
+    const sim = new CombatSimulation(team1, team2, roundSeed(combatSeed >>> 0, series.attempt), bonus)
     const events: CombatEvent[] = []
     while (sim.winner === null) events.push(...sim.step())
     log.push({ round: log.length + 1, winner: sim.winner, ticks: sim.tick, events })

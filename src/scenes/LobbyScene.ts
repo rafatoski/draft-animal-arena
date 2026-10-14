@@ -88,7 +88,7 @@ export class LobbyScene extends Phaser.Scene {
     const launch: OnlineLaunch = { matchId: match.id, roomId: state.room.id, viewer: me === match.player1 ? 'player' : 'ai', names: { player: name(match.player1), ai: name(match.player2) } }
     this.stop?.(); this.stop = undefined
     for (const n of [3, 2, 1]) { this.statusText?.setText(t('startingIn', { n })).setColor('#ffd367'); await new Promise(r => setTimeout(r, 700)); if (!this.sys.isActive()) return }
-    navigate(this, 'Arena', { match: { player: match.team1, ai: match.team2, seed: match.matchSeed, combatSeed: match.combatSeed }, online: launch })
+    navigate(this, 'Arena', { match: { player: match.team1, ai: match.team2, seed: match.matchSeed, combatSeed: match.combatSeed, bonus: { player: match.bonus1, ai: match.bonus2 } }, online: launch })
   }
 
   private seatTexts: Phaser.GameObjects.Text[] = []
@@ -114,9 +114,9 @@ export class LobbyScene extends Phaser.Scene {
     this.timerText = text(this, 240, 372, '', 22, '#ffd367').setStroke('#173f46', 4)
     this.statusText = text(this, 240, 404, '', 14, '#fff4d9'); add(this.timerText, this.statusText)
     FIGHTERS.forEach((fighter, i) => {
-      const card = miniFighterCard(this, fighter, 130, 150, i)
-      card.root.setScale(.6).setPosition(240 + ((i % 3) - 1) * 130, 468 + Math.floor(i / 3) * 118)
-      card.root.setInteractive(new Phaser.Geom.Rectangle(0, 0, 130, 180), Phaser.Geom.Rectangle.Contains)
+      const card = miniFighterCard(this, fighter, 100, 94, i) // four per row: the roster has eight fighters
+      card.root.setPosition(240 + ((i % 4) - 1.5) * 108, 478 + Math.floor(i / 4) * 130)
+      card.root.setInteractive(new Phaser.Geom.Rectangle(0, 0, 100, 124), Phaser.Geom.Rectangle.Contains)
       card.root.on('pointerup', () => this.toggle(fighter.id))
       this.cards.push(card); add(card.root)
     })
