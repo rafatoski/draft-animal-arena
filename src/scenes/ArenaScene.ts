@@ -34,7 +34,7 @@ import { battleBackground } from '../ui/arcadeBackground'
 import { abilityEffect } from '../ui/abilityEffects'
 
 const DEATH_RANK = 4
-const BOOST_BTN = { d: 100, gap: 60, lift: 190 } // diameter, space between, distance of their centre from the bottom edge
+const BOOST_BTN = { d: 100, gap: 60, margin: 28 } // diameter, space between, gap between the buttons and the bottom edge of the viewport
 type Phase = 'ready' | 'draft' | 'countdown' | 'battle' | 'roundEnd' | 'result'
 interface UnitView { root: Phaser.GameObjects.Container; art: Phaser.GameObjects.Container; health: Phaser.GameObjects.Graphics; hpText: Phaser.GameObjects.Text; name: Phaser.GameObjects.Text
   /** Spritesheet fighters only. `busy` is the one-shot priority: 0 none, 1 attack, 2 hit, 3 ability, 4 death. */
@@ -183,7 +183,10 @@ export class ArenaScene extends Phaser.Scene {
       .setZoom(layout.zoom * DPR).centerOn(layout.centerX, layout.centerY)
     const drafting = this.phase === 'ready' || this.phase === 'draft'
     this.stallText?.setPosition(width / 2, height / 2)
-    this.boosts?.setVisible(!drafting).setPosition(width / 2, height - BOOST_BTN.lift).setScale(Math.min(1, (width - 16) / (3 * BOOST_BTN.d + 2 * BOOST_BTN.gap)))
+    if (this.boosts) { // pinned to the bottom of the viewport whatever the screen size
+      const scale = Math.min(1, (width - 16) / (3 * BOOST_BTN.d + 2 * BOOST_BTN.gap))
+      this.boosts.setVisible(!drafting).setPosition(width / 2, height - BOOST_BTN.margin - BOOST_BTN.d / 2 * scale).setScale(scale)
+    }
     this.hudBackdrop.clear()
     if (drafting) {
       const fit = portraitLayout(this.scale.width, this.scale.height)
