@@ -610,10 +610,9 @@ export class ArenaScene extends Phaser.Scene {
           const dy = sy - view.py
           if (Math.abs(dx) > .05) view.sprite.setFlipX((view.kit!.walkFlip ?? view.kit!.flip)(dx))
           // ignoreIfPlaying: a looping clip must not restart on every tick.
-          // Status looks: stunned = stun clip (or a blue tint), poisoned = green tint, cloaked = translucent shimmer.
+          // Status looks: stunned = stun clip (or a blue tint), poisoned = green tint. Cloaked fighters stay fully opaque (the floating text says so).
           const tint = unit.stun > 0 ? 0x9ab0ff : unit.poison > 0 ? 0xb6f5a0 : undefined
           if (tint !== undefined) view.sprite.setTint(tint); else view.sprite.clearTint()
-          view.sprite.setAlpha(unit.cloak > 0 ? .4 + .1 * Math.sin(this.simulation.tick) : 1)
           if (!view.busy) {
             if (unit.stun > 0 && view.kit!.anims.stun) view.sprite.play(view.kit!.anims.stun, true)
             else view.sprite.play(Math.hypot(dx, dy) > .05 ? view.kit!.walk(dx, dy) : view.kit!.anims.idle, true)

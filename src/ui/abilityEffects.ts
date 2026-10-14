@@ -20,13 +20,13 @@ export function abilityEffect(scene: Phaser.Scene, layer: Phaser.GameObjects.Lay
     g.lineStyle(10, 0xbfe9ff, .7).lineBetween(from.x, from.y, (to[0] ?? from).x, (to[0] ?? from).y)
     scene.tweens.add({ targets: g, alpha: 0, duration: 260, onComplete: () => g.destroy() }); puff(scene, layer, to[0] ?? from, 0xbfe9ff, 18, 300)
   } else if (ability === 'bite') puff(scene, layer, to[0] ?? from, 0xfff4d9, 14, 240, .8)
-  else if (ability === 'cloak') { ring(0xb06bff, 60, 4); puff(scene, layer, from, 0x4de1ff, 26, 480, .35) } // purple / cyan activation glow
-  else if (ability === 'venom') for (let i = 0; i < 6; i++) puff(scene, layer, { x: (to[0] ?? from).x + (i - 2.5) * 5, y: (to[0] ?? from).y - 10 - (i % 3) * 6 }, i % 2 ? 0x9dff6a : 0xb06bff, 6, 520, .8)
+  else if (ability === 'cloak') { ring(0xffffff, 60, 4); puff(scene, layer, from, 0x4de1ff, 26, 480, .35) } // white / cyan activation glow
+  else if (ability === 'venom') for (let i = 0; i < 6; i++) puff(scene, layer, { x: (to[0] ?? from).x + (i - 2.5) * 5, y: (to[0] ?? from).y - 10 - (i % 3) * 6 }, i % 2 ? 0x9dff6a : 0xd6ffb8, 6, 520, .8)
   else { // blackout: smoke where he vanishes and where he lands, plus a trail between
-    for (let i = 0; i < 5; i++) puff(scene, layer, { x: from.x + (i - 2) * 12, y: from.y - (i % 2) * 10 }, 0x2a0d4a, 22, 640, .6)
+    for (let i = 0; i < 5; i++) puff(scene, layer, { x: from.x + (i - 2) * 12, y: from.y - (i % 2) * 10 }, 0xcfd6e2, 22, 640, .45)
     const g = scene.add.graphics().setDepth(850); layer.add(g)
-    g.lineStyle(8, 0xb06bff, .6).lineBetween(from.x, from.y, (to[0] ?? from).x, (to[0] ?? from).y)
+    g.lineStyle(8, 0xffffff, .5).lineBetween(from.x, from.y, (to[0] ?? from).x, (to[0] ?? from).y)
     scene.tweens.add({ targets: g, alpha: 0, duration: 420, onComplete: () => g.destroy() })
-    for (const t of to) for (let i = 0; i < 3; i++) puff(scene, layer, { x: t.x + (i - 1) * 8, y: t.y - 6 }, i === 1 ? 0x4de1ff : 0x7a3dd1, 12, 360, .75)
+    for (const t of to) for (let i = 0; i < 3; i++) puff(scene, layer, { x: t.x + (i - 1) * 8, y: t.y - 6 }, i === 1 ? 0x4de1ff : 0xffffff, 12, 360, .6)
   }
 }

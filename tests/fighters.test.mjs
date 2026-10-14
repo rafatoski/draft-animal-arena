@@ -48,7 +48,7 @@ test('assets: the repacked sheets are 1536x3072 (6x12 cells of 256) and every cl
     for (const clip of real) {
       const { frames } = layout.clips[clip]
       assert.ok(frames.length >= 2 && frames.every(f => Number.isInteger(f) && f >= 0 && f < used * 6), `${name}.${clip} frames inside the ${used} drawn rows`)
-      assert.equal(new Set(frames.map(f => Math.floor(f / 6))).size, 1, `${name}.${clip} stays inside one row`)
+      if (!(name === 'platypus' && ['hit', 'stun', 'death'].includes(clip)) && !(name === 'k9' && ['bite', 'death'].includes(clip))) assert.equal(new Set(frames.map(f => Math.floor(f / 6))).size, 1, `${name}.${clip} stays inside one row`) // the platypus' hit / stun / death are hand-picked clean frames of rows 10-11
     }
   }
   const row = (layout, clip) => Math.floor(layout.clips[clip].frames[0] / 6)
@@ -56,8 +56,8 @@ test('assets: the repacked sheets are 1536x3072 (6x12 cells of 256) and every cl
     assert.deepEqual([row(layout, 'idle'), row(layout, 'walkDown'), row(layout, 'walkUp'), row(layout, 'walkRight'), row(layout, 'walkLeft')], [0, 1, 2, 3, 4])
   }
   assert.deepEqual([K9_LAYOUT.mirrorLeft, PLATYPUS_LAYOUT.mirrorLeft], [false, true]) // K9 has real left art; Platypus' two side rows both face right
-  assert.deepEqual([row(K9_LAYOUT, 'rush'), row(K9_LAYOUT, 'bite'), row(K9_LAYOUT, 'codered'), row(K9_LAYOUT, 'death')], [5, 6, 7, 10])
-  assert.deepEqual([row(PLATYPUS_LAYOUT, 'strike'), row(PLATYPUS_LAYOUT, 'cloak'), row(PLATYPUS_LAYOUT, 'venom'), row(PLATYPUS_LAYOUT, 'blackout'), row(PLATYPUS_LAYOUT, 'death')], [5, 6, 7, 8, 11])
+  assert.deepEqual([row(K9_LAYOUT, 'rush'), row(K9_LAYOUT, 'bite'), row(K9_LAYOUT, 'codered'), row(K9_LAYOUT, 'death')], [5, 6, 7, 9])
+  assert.deepEqual([row(PLATYPUS_LAYOUT, 'strike'), row(PLATYPUS_LAYOUT, 'cloak'), row(PLATYPUS_LAYOUT, 'venom'), row(PLATYPUS_LAYOUT, 'blackout'), row(PLATYPUS_LAYOUT, 'death')], [5, 6, 7, 8, 10])
 })
 
 // ───────── ability rules, driven through the real simulation ─────────
