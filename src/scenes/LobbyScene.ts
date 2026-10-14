@@ -5,7 +5,7 @@ import { FIGHTERS } from '../game/fighters'
 import { miniFighterCard } from '../ui/miniFighterCard'
 import { preloadCardArt } from '../ui/collectibleCard'
 import { audio } from '../services/audio'
-import { isUnlocked, leaveRoom, setTeam, setReady, fetchRoomState, fetchMatch, startMatch, watchRoom, getProfile, serverClockOffset, finalizeSelection, saveDraft } from '../services/online'
+import { isUnlocked, leaveRoom, setTeam, setReady, fetchRoomState, fetchMatch, startMatch, watchRoom, dlog, getProfile, serverClockOffset, finalizeSelection, saveDraft } from '../services/online'
 import type { RoomState } from '../services/online'
 import type { OnlineLaunch } from './ArenaScene'
 
@@ -22,6 +22,7 @@ export class LobbyScene extends Phaser.Scene {
   private launched = false
   private sawLobby = false // this scene watched the room in 'lobby', so a 'finished' room with a match is the one we just started
   private startedAt = 0
+  private lastStatus = ''
   private offset = 0
   private finalizing = false
   private timerText?: Phaser.GameObjects.Text
@@ -30,7 +31,7 @@ export class LobbyScene extends Phaser.Scene {
   init(data: { roomId?: string } = {}) { this.roomId = data.roomId }
   preload() { preloadCardArt(this, FIGHTERS) }
   create() {
-    this.input.enabled = true; this.state = null; this.cards = []; this.picked = []; this.note = ''; this.starting = false; this.launched = false; this.finalizing = false; this.sawLobby = false; this.startedAt = 0
+    this.input.enabled = true; this.state = null; this.cards = []; this.picked = []; this.note = ''; this.starting = false; this.launched = false; this.finalizing = false; this.sawLobby = false; this.startedAt = 0; this.lastStatus = ''
     background(this); entrance(this); heading(this, t('lobbyTitle'), t('lobbyHint'))
     this.view = this.add.container(0, 0)
     this.events.once('shutdown', () => { this.stop?.(); this.stop = undefined })
@@ -77,34 +78,41 @@ export class LobbyScene extends Phaser.Scene {
   private react() {
     const state = this.state; if (!state) return
     const seats = state.seats, allReady = seats.length === 2 && seats.every(s => s.ready)
+    if (state.room.status !== this.lastStatus) { dlog('room-status', { room: state.room.id, from: this.lastStatus, to: state.room.status, match: state.room.matchId }); this.lastStatus = state.room.status }
     if (state.room.status === 'lobby') this.sawLobby = true
     if (state.room.status === 'lobby' && allReady && !this.starting) {
       this.starting = true; this.startedAt = Date.now(); this.note = ''
-      void startMatch(state.room.id).then(r => { if (!r.ok) { console.warn('[online] start-match failed:', r.message); this.starting = false; this.note = t('errGeneric'); this.draw() } })
+      void startMatch(state.room.id).then(r => {
+        dlog('start-match', { room: state.room.id, ok: r.ok, ...(r.ok ? { match: r.value.matchId, created: r.value.created } : { reason: r.message }) })
+        if (!r.ok) this.starting = false // the watchdog re-reads the room and tries again; the other player's call may already have started it
+      })
     }
     // The server simulates the whole match inside start-match, so the room is 'in_match' for only a few ms: 'finished' with a match id is just as valid.
     const started = state.room.status === 'in_match' || (state.room.status === 'finished' && this.sawLobby && allReady)
     if (started && state.room.matchId && !this.launched) { this.launched = true; void this.launch(state) }
     if (state.room.status === 'lobby') this.starting = this.starting && allReady
   }
-  /** Every 2 s while "Starting match" shows: re-read the room (missed realtime events), and give up visibly after 25 s. */
+  /** Every 2 s until the arena opens: re-read the room (realtime is only a hint) and give up visibly after 25 s. Runs whatever happened to start-match. */
   private watchdog() {
-    if (!this.starting || this.launched || !this.sys.isActive()) return
+    const state = this.state
+    if (this.launched || !this.sys.isActive() || !state || !this.sawLobby || !state.seats.length || !(state.seats.length === 2 && state.seats.every(s => s.ready))) return
+    if (!this.startedAt) this.startedAt = Date.now()
     void this.sync()
-    if (Date.now() - this.startedAt > 25000 && !this.note) { console.warn('[online] match did not start within 25 s'); this.note = t('startTimeout'); this.draw(); this.showRetry() }
+    if (Date.now() - this.startedAt > 25000 && !this.note) { dlog('start-timeout', { room: state.room.id, status: state.room.status, match: state.room.matchId }); this.note = t('startTimeout'); this.draw(); this.showRetry() }
   }
   private showRetry() {
     const retry = button(this, 240, 640, t('retry'), () => {
-      retry.destroy(); this.note = ''; this.starting = false; this.launched = false; void this.sync()
+      retry.destroy(); this.note = ''; this.starting = false; this.launched = false; this.startedAt = Date.now(); void this.sync()
     }, { width: 200, size: 15, color: PALETTE.yellow })
     this.view.add(retry)
   }
   private async launch(state: RoomState) {
     const match = await fetchMatch(state.room.matchId!)
     const me = getProfile()?.id
-    if (!match || !me) { console.warn('[online] could not load match', state.room.matchId); this.launched = false; return } // the watchdog tries again
+    if (!match || !me) { dlog('match-load-failed', { room: state.room.id, match: state.room.matchId }); this.launched = false; return } // the watchdog tries again
     const name = (id: string) => state.seats.find(s => s.playerId === id)?.name ?? '…'
     const launch: OnlineLaunch = { matchId: match.id, roomId: state.room.id, viewer: me === match.player1 ? 'player' : 'ai', names: { player: name(match.player1), ai: name(match.player2) } }
+    dlog('launch', { room: state.room.id, match: match.id, viewer: launch.viewer })
     this.stop?.(); this.stop = undefined
     for (const n of [3, 2, 1]) { this.statusText?.setText(t('startingIn', { n })).setColor('#ffd367'); await new Promise(r => setTimeout(r, 700)); if (!this.sys.isActive()) return }
     navigate(this, 'Arena', { match: { player: match.team1, ai: match.team2, seed: match.matchSeed, combatSeed: match.combatSeed, bonus: { player: match.bonus1, ai: match.bonus2 } }, online: launch })
@@ -154,7 +162,7 @@ export class LobbyScene extends Phaser.Scene {
       if (!id || !seat) { label.setText(t('waitingOpp')); tag.setText(''); return }
       label.setText(seat.playerId === me ? `${seat.name}  (${t('youTag')})` : seat.name); label.setScale(1)
       if (label.width > 270) label.setScale(270 / label.width)
-      tag.setText(`${this.online.has(id) ? t('oppOnline') : t('oppOffline')}  •  ${seat.ready ? t('readyBtn') : t('notReadyBtn')}`)
+      tag.setText(`${this.online.has(id) || state.room.status !== 'lobby' ? t('oppOnline') : t('oppOffline')}  •  ${seat.ready ? t('readyBtn') : t('notReadyBtn')}`)
     })
     const mine = state.seats.find(s => s.playerId === me)
     const picked = mine && mine.team.length === 3 ? mine.team : this.picked

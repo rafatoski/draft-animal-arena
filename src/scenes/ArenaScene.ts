@@ -16,7 +16,7 @@ import type { SpriteKit } from '../game/spriteKit'
 import type { TextKey } from '../services/i18n'
 import { CombatSimulation } from '../simulation/combat'
 import type { CombatEvent, Team, Unit, Winner } from '../simulation/combat'
-import { fetchReward, getProfile, myBonus, ownedFighters, practiceMatch, refreshProfile, waitForResult } from '../services/online'
+import { dlog, fetchReward, getProfile, myBonus, ownedFighters, practiceMatch, refreshProfile, waitForResult } from '../services/online'
 import { draftMatch, newSeed } from '../game/match'
 import { newSeries, recordRound, roundSeed, isFinalRound, WINS_NEEDED } from '../game/series'
 import type { Series } from '../game/series'
@@ -445,6 +445,7 @@ export class ArenaScene extends Phaser.Scene {
   private async showOnlineResult() {
     const online = this.online!, me = getProfile()?.id
     const match = await waitForResult(online.matchId)
+    dlog('result', { room: online.roomId, match: online.matchId, status: match?.status, winner: match?.winnerId, score: `${match?.score1}-${match?.score2}` })
     await refreshProfile()
     const iWon = match ? match.winnerId === me : this.series.winner === this.viewer
     if (match && match.winnerId && (match.winnerId === me) !== (this.series.winner === this.viewer)) console.warn('[online] local replay disagrees with the server result; showing the server result')

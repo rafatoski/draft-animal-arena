@@ -211,6 +211,12 @@ export async function waitForResult(matchId: string, tries = 12): Promise<Online
   return null
 }
 
+/** Structured dev log: abbreviated ids only, never tokens. */
+export const dlog = (event: string, fields: Record<string, unknown> = {}) => {
+  const short = (v: unknown) => typeof v === 'string' && /^[0-9a-f-]{36}$/i.test(v) ? v.slice(0, 8) : v
+  console.info('[online]', event, JSON.stringify({ me: short(getProfile()?.id), ...Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, short(v)])) }))
+}
+
 /** Realtime: row changes for the room plus presence (who currently has the lobby open). Call the returned function to leave. */
 export function watchRoom(roomId: string, myId: string, onChange: () => void, onPresence: (online: Set<string>) => void) {
   if (!supabase) return () => {}
@@ -218,7 +224,7 @@ export function watchRoom(roomId: string, myId: string, onChange: () => void, on
     .on('postgres_changes', { event: '*', schema: 'public', table: 'multiplayer_rooms', filter: `id=eq.${roomId}` }, onChange)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'room_players', filter: `room_id=eq.${roomId}` }, onChange)
     .on('presence', { event: 'sync' }, () => onPresence(new Set(Object.keys(channel.presenceState()))))
-    .subscribe(status => { if (status === 'SUBSCRIBED') void channel.track({ at: Date.now() }) })
+    .subscribe(status => { dlog('realtime', { room: roomId, status }); if (status === 'SUBSCRIBED') void channel.track({ at: Date.now() }) })
   return () => { void supabase!.removeChannel(channel) }
 }
 
