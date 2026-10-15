@@ -155,7 +155,7 @@ export class ArenaScene extends Phaser.Scene {
     if (data.match) {
       this.match = data.match; this.seed = data.match.seed
       this.selection = [...data.match.player]
-      if (this.practice && getProfile()) void this.startVerifiedPractice(); else this.beginBattle() // a rematch is a new server-verified match too
+      if (!this.online && getProfile()) void this.startVerifiedSolo(); else this.beginBattle() // a rematch is a new server-verified match too
     } else this.startDraft()
     this.resizeArena()
   }
@@ -262,12 +262,12 @@ export class ArenaScene extends Phaser.Scene {
     this.match = draftMatch(this.selection, this.seed, this.practice, ownedFighters())
     this.selection = [...this.match.player]
     if (getProfile()) this.match.bonus = { player: myBonus(this.match.player) } // signed-in players fight with their purchased upgrades; guests use base stats
-    if (this.practice && getProfile()) void this.startVerifiedPractice(); else this.beginBattle()
+    if (!this.online && getProfile()) void this.startVerifiedSolo(); else this.beginBattle()
   }
-  /** Signed-in practice: the server picks the seed, simulates the match and records the reward; this scene only replays it. */
-  private async startVerifiedPractice() {
+  /** Signed-in solo play: the server stores the mode, opponents and seed before the fight. */
+  private async startVerifiedSolo() {
     this.phase = 'countdown' // inert while waiting for the server
-    const launch = await startPractice(this.match.player)
+    const launch = await startPractice(this.match.player, this.practice ? 'practice' : 'cpu')
     if (!this.sys.isActive()) return
     if (launch) {
       this.match = { ...this.match, ai: launch.robots, combatSeed: launch.combatSeed, bonus: { player: launch.bonus } } // the server's seed and upgrade snapshot
@@ -559,13 +559,13 @@ export class ArenaScene extends Phaser.Scene {
       const verdict = await finishPractice(this.practiceRequest, this.presses)
       if (verdict) {
         this.serverPracticeWin = verdict.playerWon
-        this.practiceReward = !verdict.playerWon ? undefined : verdict.limited ? { status: 'limited' } : { status: 'ok', coins: verdict.coins, diamonds: verdict.diamonds }
+        this.practiceReward = !this.practice || !verdict.playerWon ? undefined : verdict.limited ? { status: 'limited' } : { status: 'ok', coins: verdict.coins, diamonds: verdict.diamonds }
       } else this.practiceReward = { status: 'failed' }
     }
     const winner = this.serverPracticeWin === undefined ? this.series.winner! : this.serverPracticeWin ? 'player' : 'ai' // the server's verdict wins
     let reward = this.practiceReward
     if (this.practice && winner === 'player' && !getProfile() && getGuest()) reward = { status: 'session', coins: guestPracticeWin() }
-    if (reward?.status === 'ok') await refreshProfile() // balances shown elsewhere now match the server
+    if (this.serverPracticeWin !== undefined || reward?.status === 'ok') await refreshProfile() // balances shown elsewhere now match the server
     if (!this.sys.isActive()) return
     navigate(this, 'Results', {
       match: this.match, winner, reward,

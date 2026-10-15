@@ -250,13 +250,13 @@ export async function fetchReward(matchId: string): Promise<Reward | null> {
 }
 
 export interface PracticeStart { requestId: string; robots: string[]; combatSeed: number; bonus: TeamBonus }
-/** Opens a practice match: the server picks and remembers the seed and the upgrade snapshot. null = could not be verified. */
-export async function startPractice(team: readonly string[]): Promise<PracticeStart | null> {
+/** Opens a solo match: the server picks and remembers the seed and the upgrade snapshot. null = could not be verified. */
+export async function startPractice(team: readonly string[], mode: 'practice' | 'cpu' = 'practice'): Promise<PracticeStart | null> {
   if (!supabase || !profile) return null
   try {
     const requestId = crypto.randomUUID()
-    const { data, error } = await supabase.functions.invoke('practice-match', { body: { action: 'start', team, request_id: requestId } })
-    if (error || !data?.robot_team) return null
+    const { data, error } = await supabase.functions.invoke('practice-match', { body: { action: 'start', team, mode, request_id: requestId } })
+    if (error || !data?.robot_team || (mode === 'cpu' && data.mode !== mode)) return null
     return { requestId, robots: data.robot_team, combatSeed: data.combat_seed, bonus: data.bonus ?? {} }
   } catch { return null }
 }

@@ -53,3 +53,49 @@ test('server replay with hype presses: same presses same hash, presses change th
   assert.deepEqual(server.cleanPresses('nope', [0]), [])
   assert.equal(server.cleanPresses(Array.from({ length: 1000 }, (_, i) => ({ attempt: 0, tick: i + 1, unit: 0 })), [0]).length, 400)
 })
+
+test('solo endpoint persists CPU mode and opponents; finish cannot turn practice into ranked play', async () => {
+  const { transpile } = await import('typescript')
+  const { draftMatch } = await import('../supabase/functions/_shared/game/match.ts')
+  let handler, stored, recorded
+  const admin = {
+    from() {
+      const filters = {}
+      const query = {
+        select() { return query },
+        eq(k, v) { filters[k] = v; return query },
+        async maybeSingle() { return { data: stored && Object.entries(filters).every(([k, v]) => stored[k] === v) ? stored : null } },
+        async insert(row) { stored = row; return { error: null } },
+      }
+      return query
+    },
+    async rpc(name, args) {
+      if (name === 'team_bonus') return { data: {}, error: null }
+      recorded = { name, args }
+      return { data: { id: 'saved', player_won: args.p_player_won, coins: 0, diamonds: 0, limited: false }, error: null }
+    },
+  }
+  const caller = { auth: { getUser: async () => ({ data: { user: { id: 'owner' } } }) } }
+  const source = readFileSync('supabase/functions/practice-match/index.ts', 'utf8').replace(/^import .*\n/gm, '')
+  new Function('Deno', 'createClient', 'cleanPresses', 'runOnlineMatch', 'draftMatch', 'ROBOT_IDS', transpile(source))(
+    { env: { get: k => k }, serve: h => { handler = h } },
+    (_url, key) => key === 'SUPABASE_ANON_KEY' ? caller : admin,
+    server.cleanPresses, server.runOnlineMatch, draftMatch, ['robot1', 'robot2', 'robot3'],
+  )
+  const call = body => handler(new Request('https://example.test', { method: 'POST', headers: { Authorization: 'Bearer test' }, body: JSON.stringify(body) }))
+  for (const mode of ['cpu', 'practice']) {
+    stored = undefined
+    const request_id = crypto.randomUUID(), team = ['chicken', 'capybara', 'frog']
+    const start = await (await call({ action: 'start', mode, request_id, team })).json()
+    assert.equal(start.mode, mode)
+    assert.deepEqual(start.robot_team, stored.opponent_team)
+    assert.equal(start.robot_team.every(id => id.startsWith('robot')), mode === 'practice')
+    const retry = await (await call({ action: 'start', mode: mode === 'cpu' ? 'practice' : 'cpu', request_id, team })).json()
+    assert.deepEqual(retry, start)
+    const finish = await call({ action: 'finish', mode: mode === 'cpu' ? 'practice' : 'cpu', request_id, player_won: true, presses: [] })
+    assert.equal(finish.status, 200)
+    assert.equal(recorded.name, mode === 'cpu' ? 'record_cpu_match' : 'record_practice_match')
+    assert.equal(recorded.args.p_player_won, server.runOnlineMatch(team, start.robot_team, start.combat_seed, { player: {} }, []).winner === 1)
+  }
+  assert.equal((await call({ action: 'finish', request_id: crypto.randomUUID() })).status, 404)
+})

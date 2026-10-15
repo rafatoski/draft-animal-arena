@@ -35,7 +35,7 @@ const en = {
   onlineOff: 'Online play is not set up in this build.', working: 'ONE MOMENT…', guestTag: 'GUEST', googleTag: 'GOOGLE', levelN: 'LEVEL {n}',
   coinsLabel: 'COINS', diamondsLabel: 'DIAMONDS', winsLabel: 'WINS', lossesLabel: 'LOSSES',
   errProvider: 'Google sign-in is not enabled yet.', errNetwork: 'No connection. Try again.', errGeneric: 'Something went wrong. Try again.', startTimeout: 'The match did not start. Retry or leave the room.', retry: 'RETRY',
-  lbEmpty: 'No ranked players yet.\nWin an online match!', lbError: 'Could not load the ranking.', lbLoading: 'LOADING…', lbRefresh: 'REFRESH', lbPrev: 'PREVIOUS PAGE', lbNext: 'NEXT PAGE', lbYou: 'YOU', lbHead: 'PLAYER • WINS • LOSSES • WIN %',
+  lbEmpty: 'No ranked players yet.\nPlay against the computer or online!', lbError: 'Could not load the ranking.', lbLoading: 'LOADING…', lbRefresh: 'REFRESH', lbPrev: 'PREVIOUS PAGE', lbNext: 'NEXT PAGE', lbYou: 'YOU', lbHead: 'PLAYER • WINS • LOSSES • WIN %',
   lobbyTitle: 'ONLINE ROOM', lobbyHint: 'Play a friend in a best of 3.', createRoom: 'CREATE ROOM', joinRoom: 'JOIN WITH CODE', enterCode: 'Enter the 5-letter room code',
   roomCode: 'ROOM CODE', copyCode: 'COPY', copied: 'COPIED!', waitingOpp: 'Waiting for an opponent…', oppOnline: 'CONNECTED', oppOffline: 'DISCONNECTED', youTag: 'YOU',
   readyBtn: 'READY!', notReadyBtn: 'NOT READY', pickTeam: 'Pick 3 fighters', startingMatch: 'STARTING MATCH…', leaveRoom: 'LEAVE ROOM', roomGone: 'That room is full or does not exist.',
@@ -57,7 +57,7 @@ const en = {
   guestSessionNote: 'GUEST • TEMPORARY SESSION', guestAccountNote: 'Your guest coins and progress are lost when this session ends and will not move to your Google account.',
   switchAccount: 'SWITCH ACCOUNT', backToStart: 'BACK TO START',
   rewardCoins: '+{n} Coins', rewardDiamonds: '+{n} Diamonds', rewardDiamond: '+{n} Diamond',
-  rewardSession: 'Session coins only: lost when you close the game.', rewardFailed: 'Reward could not be saved.', rewardLimited: 'Practice reward limit reached. Try again in a bit.',
+  rewardSession: 'Session coins only: lost when you close the game.', rewardFailed: 'Result could not be saved.', rewardLimited: 'Practice reward limit reached. Try again in a bit.',
   appLabel: 'Animal Arena. Enter to play. Keys 1 to 6 select fighters during drafting.',
 }
 export type TextKey = keyof typeof en
@@ -97,7 +97,7 @@ const es: Record<TextKey, string> = {
   onlineOff: 'El juego en línea no está configurado en esta versión.', working: 'UN MOMENTO…', guestTag: 'INVITADO', googleTag: 'GOOGLE', levelN: 'NIVEL {n}',
   coinsLabel: 'MONEDAS', diamondsLabel: 'DIAMANTES', winsLabel: 'VICTORIAS', lossesLabel: 'DERROTAS',
   errProvider: 'El acceso con Google aún no está activado.', errNetwork: 'Sin conexión. Inténtalo de nuevo.', errGeneric: 'Algo salió mal. Inténtalo de nuevo.', startTimeout: 'La partida no empezó. Reintenta o sal de la sala.', retry: 'REINTENTAR',
-  lbEmpty: 'Aún no hay jugadores clasificados.\n¡Gana una partida en línea!', lbError: 'No se pudo cargar el ranking.', lbLoading: 'CARGANDO…', lbRefresh: 'ACTUALIZAR', lbPrev: 'PÁGINA ANTERIOR', lbNext: 'PÁGINA SIGUIENTE', lbYou: 'TÚ', lbHead: 'JUGADOR • VICTORIAS • DERROTAS • % VICT.',
+  lbEmpty: 'Aún no hay jugadores clasificados.\n¡Juega contra la máquina o en línea!', lbError: 'No se pudo cargar el ranking.', lbLoading: 'CARGANDO…', lbRefresh: 'ACTUALIZAR', lbPrev: 'PÁGINA ANTERIOR', lbNext: 'PÁGINA SIGUIENTE', lbYou: 'TÚ', lbHead: 'JUGADOR • VICTORIAS • DERROTAS • % VICT.',
   lobbyTitle: 'SALA EN LÍNEA', lobbyHint: 'Juega con un amigo al mejor de 3.', createRoom: 'CREAR SALA', joinRoom: 'UNIRSE CON CÓDIGO', enterCode: 'Escribe el código de 5 letras',
   roomCode: 'CÓDIGO DE SALA', copyCode: 'COPIAR', copied: '¡COPIADO!', waitingOpp: 'Esperando a un rival…', oppOnline: 'CONECTADO', oppOffline: 'DESCONECTADO', youTag: 'TÚ',
   readyBtn: '¡LISTO!', notReadyBtn: 'NO LISTO', pickTeam: 'Elige 3 luchadores', startingMatch: 'EMPEZANDO PARTIDA…', leaveRoom: 'SALIR DE LA SALA', roomGone: 'Esa sala está llena o no existe.',
@@ -119,7 +119,7 @@ const es: Record<TextKey, string> = {
   guestSessionNote: 'INVITADO • SESIÓN TEMPORAL', guestAccountNote: 'Tus monedas y progreso de invitado se pierden al terminar la sesión y no pasarán a tu cuenta de Google.',
   switchAccount: 'CAMBIAR DE CUENTA', backToStart: 'VOLVER AL INICIO',
   rewardCoins: '+{n} Monedas', rewardDiamonds: '+{n} Diamantes', rewardDiamond: '+{n} Diamante',
-  rewardSession: 'Solo monedas de sesión: se pierden al cerrar el juego.', rewardFailed: 'No se pudo guardar la recompensa.', rewardLimited: 'Límite de recompensas de práctica alcanzado. Inténtalo en un rato.',
+  rewardSession: 'Solo monedas de sesión: se pierden al cerrar el juego.', rewardFailed: 'No se pudo guardar el resultado.', rewardLimited: 'Límite de recompensas de práctica alcanzado. Inténtalo en un rato.',
   appLabel: 'Animal Arena. Pulsa Intro para jugar. Las teclas 1 a 6 eligen luchadores.',
 }
 export const dictionaries = { en, es }

@@ -46,3 +46,20 @@ Variables en Production **y** Preview, luego *Redeploy* (Vite las incrusta al co
 
 Al cambiar reglas en `src/simulation` o `src/game/{config,fighters,series,onlineSim}.ts` ejecuta `npm run sync:shared`
 (los tests fallan si la copia del servidor quedó vieja).
+
+## Ranking contra la máquina
+
+Las peleas iniciadas con **Jugar**, con una cuenta de Google y conexión al servidor,
+registran victorias, derrotas y partidas totales en el mismo ranking que el multijugador.
+Práctica sigue excluida. Las partidas locales de invitados no tienen cuenta persistente.
+Los resultados anteriores contra la máquina no se pueden recuperar: no se guardaban.
+
+Desplegar primero la migración y luego la función, antes del frontend:
+
+```sh
+supabase db push
+supabase functions deploy practice-match --project-ref floounhntoduncbyctky
+```
+
+La sesión conserva el modo y los rivales elegidos por el servidor. `cpu_matches` guarda
+un solo resultado por sesión; reintentar el cierre no duplica las estadísticas.

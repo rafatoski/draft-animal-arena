@@ -1,10 +1,11 @@
-// Server-verified practice match, in two calls because the player can press hype buttons during the fight:
+// Server-verified solo match (practice or ranked CPU), in two calls because the player can press hype buttons during the fight:
 //   start  -> the server picks and remembers the seed and the upgrade snapshot; nothing is decided yet.
-//   finish -> the client reports its button presses; the server replays the whole best-of-3 with them against the training
-//             robots using the same deterministic rules, records the result and pays out once.
+//   finish -> the client reports its button presses; the server replays the whole best-of-3 with them against the stored
+//             opponents using the same deterministic rules, recording the result once. Practice alone pays rewards.
 // The server cannot know whether a real person watched, so rewards are rate-limited (economy_config.practice_limits).
 import { createClient } from 'npm:@supabase/supabase-js@2'
 import { cleanPresses, runOnlineMatch } from '../_shared/game/onlineSim.ts'
+import { draftMatch } from '../_shared/game/match.ts'
 import { ROBOT_IDS } from '../_shared/game/fighters.ts'
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' }
@@ -33,7 +34,12 @@ Deno.serve(async (req) => {
     if (!session) return json({ error: 'unknown session' }, 404)
     const presses = cleanPresses(body.presses, [0, 1, 2]) // the player controls only their own three fighters
     let result
-    try { result = runOnlineMatch(session.team, ROBOT_IDS, Number(session.combat_seed), { player: session.bonus }, presses) } catch { return json({ error: 'invalid team' }, 400) }
+    try { result = runOnlineMatch(session.team, session.opponent_team, Number(session.combat_seed), { player: session.bonus }, presses) } catch { return json({ error: 'invalid team' }, 400) }
+    if (session.mode === 'cpu') {
+      const { data, error } = await admin.rpc('record_cpu_match', { p_player: userId, p_request: requestId, p_player_won: result.winner === 1 })
+      if (error) return json({ error: error.message }, error.code === '42501' ? 403 : 400)
+      return json({ match_id: data.id, player_won: data.player_won, coins: 0, diamonds: 0, limited: false })
+    }
     const { data, error } = await admin.rpc('record_practice_match', {
       p_player: userId, p_request: requestId, p_team: session.team, p_robots: ROBOT_IDS, p_combat_seed: session.combat_seed, p_player_won: result.winner === 1, p_bonus: session.bonus,
     })
@@ -42,16 +48,21 @@ Deno.serve(async (req) => {
     return json({ match_id: data.id, player_won: data.player_won, coins: data.coins, diamonds: data.diamonds, limited: data.limited })
   }
 
+  if (body.action !== 'start' || (body.mode !== undefined && body.mode !== 'practice' && body.mode !== 'cpu')) return json({ error: 'bad request' }, 400)
+  const mode = body.mode === 'cpu' ? 'cpu' : 'practice'
   const team = Array.isArray(body.team) ? body.team.map(String) : []
   if (team.length !== 3) return json({ error: 'bad request' }, 400)
   const existing = await admin.from('practice_sessions').select('*').eq('request_id', requestId).eq('player_id', userId).maybeSingle()
-  if (existing.data) return json({ team: existing.data.team, robot_team: ROBOT_IDS, combat_seed: Number(existing.data.combat_seed), bonus: existing.data.bonus })
+  if (existing.data) return json({ mode: existing.data.mode, team: existing.data.team, robot_team: existing.data.opponent_team, combat_seed: Number(existing.data.combat_seed), bonus: existing.data.bonus })
   // Purchased upgrades are read from the database for the authenticated user; the client never sends stats.
   const bonusResult = await admin.rpc('team_bonus', { p_player: userId, p_team: team })
   if (bonusResult.error) return json({ error: bonusResult.error.message }, 400)
   const bonus = bonusResult.data ?? {}
-  const combatSeed = crypto.getRandomValues(new Uint32Array(1))[0]
-  const { error } = await admin.from('practice_sessions').insert({ request_id: requestId, player_id: userId, team, combat_seed: combatSeed, bonus })
+  const seed = crypto.getRandomValues(new Uint32Array(1))[0]
+  const match = draftMatch(team, seed, mode === 'practice')
+  const combatSeed = match.combatSeed
+  const opponents = match.ai
+  const { error } = await admin.from('practice_sessions').insert({ request_id: requestId, player_id: userId, team, combat_seed: combatSeed, bonus, mode, opponent_team: opponents })
   if (error) return json({ error: error.message }, 400)
-  return json({ team, robot_team: ROBOT_IDS, combat_seed: combatSeed, bonus })
+  return json({ mode, team, robot_team: opponents, combat_seed: combatSeed, bonus })
 })

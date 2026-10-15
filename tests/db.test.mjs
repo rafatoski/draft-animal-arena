@@ -493,3 +493,45 @@ test('new Google accounts start with 1 free diamond (ledgered once); guests neve
   assert.equal((await q(`select public.unlock_fighter('platypus') r`))[0].r.diamonds, 0)
   await fails(`select public.upgrade_fighter('platypus', 'attack', 0)`, /not enough coins/) // owning him allows upgrades (no coins yet); a locked fighter said 'not unlocked' before
 })
+
+// CPU matches share the leaderboard counters, but only verified non-practice sessions qualify.
+test('CPU wins and losses count once in the ranking; practice and unowned sessions cannot count', async () => {
+  await asService()
+  const before = await progress(A)
+  const create = async (mode = 'cpu', player = A) => {
+    const id = req()
+    await q(`insert into public.practice_sessions(request_id, player_id, team, combat_seed, mode, opponent_team)
+      values ($1, $2, '{chicken,capybara,frog}', 123, $3, '{chicken,capybara,frog}')`, [id, player, mode])
+    return id
+  }
+  const finish = (id, won, player = A) => q('select * from public.record_cpu_match($1, $2, $3)', [player, id, won])
+  const win = await create(), loss = await create()
+  const first = (await finish(win, true))[0]
+  assert.deepEqual((await finish(win, false))[0], first) // retry cannot change the verdict
+  await finish(loss, false)
+  const after = await progress(A)
+  assert.deepEqual([after.wins, after.losses, after.total_matches], [before.wins + 1, before.losses + 1, before.total_matches + 2])
+  assert.deepEqual([after.coins, after.diamonds], [before.coins, before.diamonds])
+  const [rank] = await q('select wins, losses, total_matches from public.leaderboard where player_id = $1', [A])
+  assert.deepEqual(rank, { wins: after.wins, losses: after.losses, total_matches: after.total_matches })
+  const training = await create('practice'), other = await create('cpu', B)
+  await assert.rejects(() => finish(training, true), /unknown CPU session/)
+  await assert.rejects(() => finish(other, true), /unknown CPU session/)
+  await assert.rejects(() => finish(req(), true), /unknown CPU session/)
+  await assert.rejects(() => finish(win, true, Z), /sign in with Google/)
+  const invalid = await create()
+  await q("update public.practice_sessions set team = '{chicken,chicken,frog}' where request_id = $1", [invalid])
+  await assert.rejects(() => finish(invalid, true), /invalid team/)
+  const locked = await create('cpu', C)
+  await q("update public.practice_sessions set team = '{robot1,robot2,robot3}' where request_id = $1", [locked])
+  await assert.rejects(() => finish(locked, true, C), /invalid team/)
+  assert.deepEqual(await progress(A), after)
+  await asUser(A)
+  await assert.rejects(() => finish(win, true), /permission denied/)
+  await fails(`insert into public.cpu_matches(request_id, player_id, player_won) values ('${training}', '${A}', true)`, /permission denied/)
+  assert.ok((await q('select * from public.cpu_matches')).every(r => r.player_id === A))
+  await asUser(B)
+  assert.equal((await q('select * from public.cpu_matches')).length, 0)
+  await asUser(null, 'anon')
+  await fails('select * from public.cpu_matches', /permission denied/)
+})
